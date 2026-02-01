@@ -24,7 +24,8 @@
 #include <ctype.h>
 #include <time.h>
 
-#include "../strings/strings.c"
+#define STRINGS_IMPLEMENTATION
+#include "../libs/strings.h"
 
 /// Begin Timing
 struct timespec clock_start, clock_finish, clock_delta;
@@ -243,7 +244,7 @@ typedef enum
 
 char *toktype_to_str(TokenType t)
 {
-    static_assert(TOK_TYPES_COUNT == 16 && "Cover all token types in toktype_to_str");
+    static_assert(TOK_TYPES_COUNT == 16, "Cover all token types in toktype_to_str");
     switch (t)
     {
         case TOK_IDENT:     return "Ident";
@@ -307,7 +308,7 @@ Lexer lex_new(char *file_path)
     String line = {0};
     da_for(full_source, i) {
         if (full_source.items[i] == '\n') {
-            da_push(&lexer.source, s_from_s(line));
+            da_push(&lexer.source, s_clone(line));
             s_clear(&line);
         } else {
             s_push(&line, full_source.items[i]);
@@ -329,7 +330,7 @@ Lexer lex_new(char *file_path)
     return lexer;
 }
 
-bool lex_is_empty(Lexer *lex) { return da_is_empty(lex->source); }
+bool lex_is_empty(Lexer *lex) { return da_is_empty(&lex->source); }
 
 String lex_curr_row(Lexer *lex) { return lex->source.items[lex->loc.row]; }
 size_t lex_curr_row_count(Lexer *lex) { return lex_curr_row(lex).count; }
@@ -440,7 +441,7 @@ Tokens lex_lex(Lexer *lex) // NOTE: assuming that it is correctly initialized
     static_assert(TOK_TYPES_COUNT == 16, "Cover all token types in lex_lex");
     Tokens tokens = {0};
     if (lex_is_empty(lex)) return tokens;
-    String word = s_new_empty();
+    String word = {0};
     char c;
     do {
         if (!lex_get(lex)) break;
@@ -581,6 +582,18 @@ int global_var_index_by_name(char *var_name)
     return -1;
 }
 
+void global_vars_dump()
+{
+    printf("Global Variables:");
+    if (da_is_empty(&global_vars)) printf(" empty\n");
+    else {
+        printf("\n");
+        for (size_t i = 0; i < global_vars.count; i++) {
+            printf("  %zu: %s\n", i, global_vars.items[i].name);
+        }
+    }
+}
+
 typedef struct
 {
     Tokens tokens;
@@ -673,19 +686,19 @@ void error_expected_token_types(TokenType *xpctd, int n, Token victim, Token fro
     exit(1);
 }
 
-void parser_match_type_else_error(Parser *p, TokenType xpctd, Token victim, Token from)
+void parser_match_type_else_error(Parser *p, TokenType xpctd, Token from)
 {
     if (!parser_match(p, xpctd)) {
-        error_expected_token_type(xpctd, victim, from);
+        error_expected_token_type(xpctd, parser_get(p), from);
     }
 }
 
-size_t parser_match_types_else_error(Parser *p, TokenType *xpctd, size_t n, Token victim, Token from)
+size_t parser_match_types_else_error(Parser *p, TokenType *xpctd, size_t n, Token from)
 {
     for (size_t i = 0; i < n; i++) {
         if (parser_match(p, xpctd[i])) return i;
     }
-    error_expected_token_types(xpctd, n, victim, from);
+    error_expected_token_types(xpctd, n, parser_get(p), from);
     return 0;
 }
 
@@ -734,8 +747,8 @@ Ops parser_parse(Parser *parser)
                         TokenType types[2] = {TOK_INTEGER, TOK_IDENT};
                         error_expected_token_types(types, 2, parser_get(parser), tok);
                     }
-                    parser_match_type_else_error(parser, TOK_R_PAREN, parser_get(parser), tok);
-                    parser_match_type_else_error(parser, TOK_SEMICOLON, parser_get(parser), tok);
+                    parser_match_type_else_error(parser, TOK_R_PAREN, tok);
+                    parser_match_type_else_error(parser, TOK_SEMICOLON, tok);
                     if (streq(tok.text, "print")) {
                         Op op = { .type = OP_PRINT };
                         da_push(&ops, op);
@@ -749,11 +762,10 @@ Ops parser_parse(Parser *parser)
                     if ((var_i = global_var_index_by_name(tok.text)) == -1) {
                         error_undeclared_variable(tok, "trying to assign");
                     }
-                    parser_next(parser);
                     //da_push_many(op, parser_parse_expr(parser)); // TODO
-                    Token t_val = parser_get(parser);
-                    parser_match_type_else_error(parser, TOK_INTEGER, parser_get(parser), tok);
-                    parser_match_type_else_error(parser, TOK_SEMICOLON, parser_get(parser), tok);
+                    Token t_val = parser_next(parser);
+                    parser_match_type_else_error(parser, TOK_INTEGER, tok);
+                    parser_match_type_else_error(parser, TOK_SEMICOLON, tok);
                     Op op = { .type = OP_LOAD16, .val_uint = atoi(t_val.text) }; // TODO: check for atoi corectness
                     da_push(&ops, op);
                     op = (Op){ .type = OP_GLOB_VAR_ASSIGN, .val_uint = var_i };
@@ -765,8 +777,8 @@ Ops parser_parse(Parser *parser)
             } break;  
             case TOK_VAR:
             {
+                parser_match_type_else_error(parser, TOK_IDENT, tok);
                 Token t_var_name = parser_get(parser);
-                parser_match_type_else_error(parser, TOK_IDENT, parser_get(parser), tok);
                 int var_i;
                 if ((var_i = global_var_index_by_name(t_var_name.text)) != -1) {
                     GlobVar var = global_vars.items[var_i]; 
@@ -789,10 +801,9 @@ Ops parser_parse(Parser *parser)
                 da_push(&global_vars, var);
                 if (parser_match(parser, TOK_SEMICOLON)) break;
                 else if (parser_match(parser, TOK_OP_ASSIGN)) {
-                    parser_match_type_else_error(parser, TOK_INTEGER, parser_get(parser), tok); // TODO: per ora
-                    Token t_val = parser_next(parser); // TODO: che ci faccio con questo? Lo devo salvare in rax cosi' poi da metterlo nella variabile? Mi sfugge questa cosa.
-                    tok_print(t_val);
-                    parser_match_type_else_error(parser, TOK_SEMICOLON, parser_get(parser), t_val);
+                    Token t_val = parser_get(parser); // TODO: che ci faccio con questo? Lo devo salvare in rax cosi' poi da metterlo nella variabile? Mi sfugge questa cosa.
+                    parser_match_type_else_error(parser, TOK_INTEGER, tok); // TODO: per ora
+                    parser_match_type_else_error(parser, TOK_SEMICOLON, t_val);
                     Op op = {
                         .type = OP_LOAD16,
                         .val_uint = atoi(t_val.text) // TODO: solo per ora, poi non sara' cosi'
@@ -816,7 +827,7 @@ Ops parser_parse(Parser *parser)
                     todo("parse if condition");
                     exit(1);
                 }
-                parser_match_type_else_error(parser, TOK_L_CUPAREN, parser_get(parser), tok);
+                parser_match_type_else_error(parser, TOK_L_CUPAREN, tok);
                 // TODO: parse if body (segnare da qualche parte, in uno stack magari, che si e' aperto un if/blocco e che si si aspetta venga chiuso ad un certo punto)
                 // TODO: pensare all'op per if
             } break;
@@ -860,6 +871,7 @@ bool run_cmd(char **cmd, int len)
         printf("%s ", cmd[i]);
     }
     printf("\n");
+    int status;
     switch (fork()) {
         case -1:
             perror("fork");
@@ -869,7 +881,6 @@ bool run_cmd(char **cmd, int len)
             fprintf(stderr, "ERROR: could not run cmd\n");
             exit(1);
         default:
-            int status;
             wait(&status);
             return WEXITSTATUS(status) == 0;
     }
