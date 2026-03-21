@@ -1,3 +1,5 @@
 #!/bin/bash
 
-cc -o kjude kjude.c -Wall -Wextra
+clear
+
+cc -o kjude kjude.c -Wall -Wextra -Werror

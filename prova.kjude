@@ -1,2 +1,7 @@
-var a = 7;
-print(a);
+fn foo : () = {
+    print("yeah");
+}
+
+fn main : () = {
+    foo();
+}
