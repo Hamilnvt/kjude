@@ -16,6 +16,7 @@
 #include "strings.h"
 
 #define INDEX_NOT_FOUND ((size_t)-1)
+#define DEFAULT_KJUDE_INTERMEDIATE_C_FILE "__kjude_intermediate.c"
 
 /// Begin Timing
 struct timespec clock_start, clock_finish, clock_delta; // TODO make it a structure to measure multiple interleaving
@@ -79,6 +80,26 @@ void errorln(char *format, ...)
     free(string);
 }
 
+void unreachable(char *format, ...)
+{
+    va_list fmt;
+    va_start(fmt, format);
+    char *string = fmt_to_string(format, fmt);
+    va_end(fmt);
+    printf("UNREACHABLE: %s", string);
+    free(string);
+}
+
+void unreachableln(char *format, ...)
+{
+    va_list fmt;
+    va_start(fmt, format);
+    char *string = fmt_to_string(format, fmt);
+    va_end(fmt);
+    printf("UNREACHABLE: %s\n", string);
+    free(string);
+}
+
 void note(char *format, ...)
 {
     va_list fmt;
@@ -132,20 +153,17 @@ bool read_entire_file(const char *path, String *source)
 }
 
 // Keywords
-#define KEYWORD_LET   "let"
-#define KEYWORD_IF    "if"
-#define KEYWORD_FN    "fn"
-#define KEYWORD_TRUE  "true"
-#define KEYWORD_FALSE "false"
+#define KEYWORD_IF     "if"
+#define KEYWORD_RETURN "return"
+#define KEYWORD_TRUE   "true"
+#define KEYWORD_FALSE  "false"
 
 typedef enum
 {
-    TOK_NONE = 0,
-    TOK_INVALID,
+    TOK_INVALID = 0,
     TOK_IDENT,
-    TOK_LET,
     TOK_IF,
-    TOK_FN,
+    TOK_RETURN,
     TOK_TRUE,
     TOK_FALSE,
     TOK_INTEGER,
@@ -160,6 +178,7 @@ typedef enum
     TOK_COLON,
     TOK_SEMICOLON,
     TOK_EQUALS,
+    TOK_DOUBLE_EQUALS,
     TOK_ARROW,
     TOK_PLUS,
     TOK_STAR,
@@ -181,44 +200,41 @@ typedef struct
     Location loc;
 } Token;
 
-static inline Token tok_none() { return (Token){ .type = TOK_NONE }; }
-
 char *token_type_as_string(TokenType type)
 {
-    static_assert(__tok_types_count == 24, "Cover all token types in token_type_as_string");
+    static_assert(__tok_types_count == 23, "Cover all token types in token_type_as_string");
     switch (type)
     {
-        case TOK_NONE:      return "None";
-        case TOK_INVALID:   return "Invalid";
-        case TOK_IDENT:     return "Identifier";
-        case TOK_LET:       return KEYWORD_LET;
-        case TOK_IF:        return KEYWORD_IF;
-        case TOK_FN:        return KEYWORD_FN;
-        case TOK_TRUE:      return KEYWORD_TRUE;
-        case TOK_FALSE:     return KEYWORD_FALSE;
-        case TOK_INTEGER:   return "Integer";
-        case TOK_STRING:    return "String";
-        case TOK_EOF:       return "EOF";
-        case TOK_L_PAREN:   return "(";
-        case TOK_R_PAREN:   return ")";
-        case TOK_L_SQPAREN: return "[";
-        case TOK_R_SQPAREN: return "]";
-        case TOK_L_CUPAREN: return "{";
-        case TOK_R_CUPAREN: return "}";
-        case TOK_COMMA:     return ",";
-        case TOK_COLON:     return ":";
-        case TOK_SEMICOLON: return ";";
-        case TOK_EQUALS:    return "=";
-        case TOK_ARROW:     return "->";
-        case TOK_PLUS:      return "+";
-        case TOK_STAR:      return "*";
+        case TOK_INVALID:       return "Invalid";
+        case TOK_IDENT:         return "Identifier";
+        case TOK_IF:            return KEYWORD_IF;
+        case TOK_RETURN:        return KEYWORD_RETURN;
+        case TOK_TRUE:          return KEYWORD_TRUE;
+        case TOK_FALSE:         return KEYWORD_FALSE;
+        case TOK_INTEGER:       return "Integer";
+        case TOK_STRING:        return "String";
+        case TOK_EOF:           return "EOF";
+        case TOK_L_PAREN:       return "(";
+        case TOK_R_PAREN:       return ")";
+        case TOK_L_SQPAREN:     return "[";
+        case TOK_R_SQPAREN:     return "]";
+        case TOK_L_CUPAREN:     return "{";
+        case TOK_R_CUPAREN:     return "}";
+        case TOK_COMMA:         return ",";
+        case TOK_COLON:         return ":";
+        case TOK_SEMICOLON:     return ";";
+        case TOK_DOUBLE_EQUALS: return "==";
+        case TOK_EQUALS:        return "=";
+        case TOK_ARROW:         return "->";
+        case TOK_PLUS:          return "+";
+        case TOK_STAR:          return "*";
         default:
-            errorln("unknown token type (%d)\n", type);
+            errorln("Unknown token type %d in token_type_as_string", type);
             exit(1);
     }
 }
 
-static_assert(__tok_types_count == 24, "Cover all token types in token_print");
+static_assert(__tok_types_count == 23, "Cover all token types in token_print");
 void token_print(Token tok)
 {
     switch (tok.type) {
@@ -229,10 +245,8 @@ void token_print(Token tok)
             printf("<%s, \"%s\">", token_type_as_string(tok.type), tok.lexeme);
             break;
 
-        case TOK_NONE:
-        case TOK_LET:
         case TOK_IF:
-        case TOK_FN:
+        case TOK_RETURN:
         case TOK_TRUE:
         case TOK_FALSE:
         case TOK_EOF:
@@ -249,6 +263,7 @@ void token_print(Token tok)
         case TOK_COLON:
         case TOK_SEMICOLON:
         case TOK_EQUALS:
+        case TOK_DOUBLE_EQUALS:
         case TOK_ARROW:
         case TOK_PLUS:
         case TOK_STAR:
@@ -256,7 +271,7 @@ void token_print(Token tok)
             break;
 
         default:
-            fprintf(stderr, "Unreachable token type %d in token_print\n", tok.type);
+            unreachableln("Token type %d in token_print", tok.type);
             exit(1);
     }
 }
@@ -310,10 +325,12 @@ static inline void loc_print(Location loc)
     printf("%s:%zu.%zu: ", loc_get_path(loc), loc.row+1, loc.col+1);
 }
 
+typedef struct ASTNode ASTNode;
 typedef struct
 {
     Tokens tokens;
     size_t pos;
+    ASTNode *current_function;
 } Parser;
 
 // TODO: I want it to take the source code, it should not be responsible to open files and so I could lex strings in the code on the flight
@@ -338,115 +355,6 @@ Lexer lexer_new(char *file_path)
     return lexer;
 }
 
-//bool lexer_is_empty(Lexer *lex) { return da_is_empty(&lex->source); }
-//
-//String lexer_curr_row(Lexer *lex) { return lex->source.items[lex->loc.row]; }
-//size_t lexer_curr_row_count(Lexer *lex) { return lexer_curr_row(lex).count; }
-//char lexer_current_char(Lexer *lex) { return lexer_curr_row(lex).items[lex->loc.col]; }
-//
-//bool lexer_can_advance_row(Lexer *lex) { return lex->loc.row+1 < lex->source.count; }
-//bool lexer_can_advance_col(Lexer *lex) { return lex->loc.col+1 < lexer_curr_row_count(lex); }
-//bool lexer_can_advance(Lexer *lex) { return lexer_can_advance_row(lex) || lexer_can_advance_col(lex); }
-//
-//bool lexer_advance(Lexer *lex)
-//{
-//    if (!lexer_can_advance(lex)) return false;
-//    size_t row_len = lexer_curr_row_count(lex);
-//    if (row_len == 0) {
-//        lex->loc.row++;
-//    } else {
-//        lex->loc.col = (lex->loc.col+1) % row_len;
-//        if (lex->loc.col == 0) lex->loc.row++;
-//    }
-//    return true;
-//}
-//
-//bool lexer_get(Lexer *lex)
-//{
-//    if (lex->loc.row < lex->source.count && lex->loc.col < lexer_curr_row_count(lex)) {
-//        lex->c = lexer_current_char(lex);
-//        return true;
-//    } else if (lexer_can_advance(lex)) {
-//        lexer_advance(lex);
-//        return lexer_get(lex);
-//    } else return false;
-//}
-//
-//bool lexer_peek(Lexer *lex)
-//{
-//    if (!lexer_can_advance_col(lex)) return false;
-//    lex->c = lexer_curr_row(lex).items[lex->loc.col+1];
-//    return true;
-//}
-//
-//bool lexer_expect(Lexer *lex, char expected)
-//{
-//    char tmp = lex->c;
-//    bool res = false;
-//    if (lexer_peek(lex) && lex->c == expected) res = true;
-//    lex->c = tmp;
-//    return res;
-//}
-//
-//bool lexer_expect_digit(Lexer *lex)
-//{
-//    char tmp = lex->c;
-//    bool res = false;
-//    if (lexer_peek(lex) && isdigit(lex->c)) res = true;
-//    lex->c = tmp;
-//    return res;
-//}
-//
-//bool lexer_expect_alpha(Lexer *lex)
-//{
-//    char tmp = lex->c;
-//    bool res = false;
-//    if (lexer_peek(lex) && isalpha(lex->c)) res = true;
-//    lex->c = tmp;
-//    return res;
-//}
-//
-//bool lexer_expect_alphanum(Lexer *lex)
-//{
-//    char tmp = lex->c;
-//    bool res = false;
-//    if (lexer_peek(lex) && isalnum(lex->c)) res = true;
-//    lex->c = tmp;
-//    return res;
-//}
-//
-//bool lexer_match(Lexer *lex, char expected)
-//{
-//    char tmp = lex->c;
-//    bool res = false;
-//    if (lexer_peek(lex) && lex->c == expected) {
-//        lexer_advance(lex);
-//        res = true;
-//    } else {
-//        lex->c = tmp;
-//        res = false;
-//    };
-//    return res;
-//}
-//
-//// TODO: non sembra funzionare, ma forse non serve
-//bool lexer_match_sequence(Lexer *lex, char *needle)
-//{
-//    printf("Siamo dentro\n");
-//    Location saved_loc = loc_clone(lex->loc);
-//    size_t len = strlen(needle);
-//    for (size_t i = 0; i < len; i++) {
-//        if (!lexer_match(lex, needle[i])) {
-//            lex->loc = saved_loc;
-//            return false;
-//        }
-//    }
-//    return true;
-//}
-
-// TODO:
-// - advance location
-// - create utility macros/functions
 static inline char lexer_current_char(const Lexer *lexer) { return lexer->source[lexer->pos]; }
 #define current_char (lexer_current_char(lexer))
 
@@ -483,7 +391,7 @@ static inline bool can_continue_ident(char c) { return isalnum(c) || c == '_'; }
 static inline bool can_start_number(char c) { return isdigit(c); }
 static inline bool can_continue_number(char c) { return isdigit(c); }
 
-static_assert(__tok_types_count == 24, "Cover all token types in lexer_get_next_token");
+static_assert(__tok_types_count == 23, "Cover all token types in lexer_get_next_token");
 Token lexer_get_next_token(Lexer *lexer)
 {
     lexer_eat_spaces(lexer);
@@ -504,12 +412,11 @@ Token lexer_get_next_token(Lexer *lexer)
         } while (can_continue_ident(c));
         token.lexeme[i] = '\0';
         
-             if (streq(token.lexeme, KEYWORD_LET))   token.type = TOK_LET;
-        else if (streq(token.lexeme, KEYWORD_IF))    token.type = TOK_IF;
-        else if (streq(token.lexeme, KEYWORD_FN))    token.type = TOK_FN;
-        else if (streq(token.lexeme, KEYWORD_TRUE))  token.type = TOK_TRUE;
-        else if (streq(token.lexeme, KEYWORD_FALSE)) token.type = TOK_FALSE;
-        else                                         token.type = TOK_IDENT;
+             if (streq(token.lexeme, KEYWORD_IF))     token.type = TOK_IF;
+        else if (streq(token.lexeme, KEYWORD_RETURN)) token.type = TOK_RETURN;
+        else if (streq(token.lexeme, KEYWORD_TRUE))   token.type = TOK_TRUE;
+        else if (streq(token.lexeme, KEYWORD_FALSE))  token.type = TOK_FALSE;
+        else                                          token.type = TOK_IDENT;
     } else if (can_start_number(c)) {
         int i = 0;
         do {
@@ -530,7 +437,16 @@ Token lexer_get_next_token(Lexer *lexer)
             case ',': token.type = TOK_COMMA;     break;
             case ':': token.type = TOK_COLON;     break;
             case ';': token.type = TOK_SEMICOLON; break;
-            case '=': token.type = TOK_EQUALS;    break;
+            case '=': {
+                if (current_char == '=') {
+                    token.type = TOK_DOUBLE_EQUALS;
+                    token.lexeme[i++] = current_char;
+                    lexer->pos++;
+                    lexer->loc.col++;
+                } else {
+                    token.type = TOK_EQUALS;
+                }
+            } break;
             case '+': token.type = TOK_PLUS;      break;
             case '-': {
                 if (current_char == '>') {
@@ -571,7 +487,7 @@ Token lexer_get_next_token(Lexer *lexer)
                 lexer->pos++;
                 lexer->loc.col++;
             } break;
-            default: token.type = TOK_INVALID; break;
+            default: break;
         }
 
         token.lexeme[i] = '\0';
@@ -591,92 +507,17 @@ Tokens lexer_lex(Lexer *lexer)
     return tokens;
 }
 
-//Tokens lexer_lex(Lexer *lex) // NOTE: assuming that it is correctly initialized
-//{
-//    static_assert(__tok_types_count == 16, "Cover all token types in lexer_lex");
-//    Tokens tokens = {0};
-//    if (lexer_is_empty(lex)) return tokens;
-//    String word = {0};
-//    char c;
-//    do {
-//        if (!lexer_get(lex)) break;
-//        c = lex->c;
-//        if (isblank(c)) {
-//            continue;
-//        }
-//        Token token = (Token){
-//            .type = TOK_NONE,
-//            .loc  = loc_clone(lex->loc)
-//        };
-//        token.lexeme[1] = '\0';
-//               if (c == '=') { token.lexeme[0] = '='; token.type = TOK_EQUALS;
-//        } else if (c == '+') { token.lexeme[0] = '+'; token.type = TOK_PLUS;
-//        } else if (c == '(') { token.lexeme[0] = '('; token.type = TOK_L_PAREN;
-//        } else if (c == ')') { token.lexeme[0] = ')'; token.type = TOK_R_PAREN;
-//        } else if (c == '[') { token.lexeme[0] = '['; token.type = TOK_L_SQPAREN;
-//        } else if (c == ']') { token.lexeme[0] = ']'; token.type = TOK_R_SQPAREN;
-//        } else if (c == '{') { token.lexeme[0] = '{'; token.type = TOK_L_CUPAREN;
-//        } else if (c == '}') { token.lexeme[0] = '}'; token.type = TOK_R_CUPAREN;
-//        } else if (c == ';') { token.lexeme[0] = ';'; token.type = TOK_SEMICOLON;
-//        } else if (c == '/') {
-//            if (lexer_expect(lex, '/')) {
-//                lex->loc.col = -1; // NOTE: effectively skip the line after the next lexer_advance
-//                continue;
-//            } else {
-//                loc_print(lex->loc);
-//                printf(": ");
-//                errorln("Unexpected character '%c'", c);
-//                note("To comment put two of them: \"//\".");
-//                exit(1);
-//            }
-//        } else if (isdigit(c)) {
-//            s_push(&word, c);
-//            while (lexer_expect_digit(lex)) {
-//                lexer_advance(lex);
-//                lexer_get(lex);
-//                s_push(&word, lex->c);
-//            }
-//            s_push_null(&word);
-//            strncpy(token.lexeme, word.items, word.count);
-//            s_clear(&word);
-//
-//            token.type = TOK_INTEGER;
-//        } else if (isalpha(c) || c == '_') {
-//            s_push(&word, c);
-//            while (lexer_expect_alphanum(lex) || lexer_expect(lex, '_')) {
-//                lexer_advance(lex);
-//                lexer_get(lex);
-//                s_push(&word, lex->c);
-//            }
-//            s_push_null(&word);
-//            strncpy(token.lexeme, word.items, word.count);
-//            s_clear(&word);
-//
-//            if      (streq(token.lexeme, KW_LET))   token.type = TOK_LET; 
-//            else if (streq(token.lexeme, KW_IF))    token.type = TOK_IF; 
-//            else if (streq(token.lexeme, KW_TRUE))  token.type = TOK_TRUE; 
-//            else if (streq(token.lexeme, KW_FALSE)) token.type = TOK_FALSE; 
-//            else                                  token.type = TOK_IDENT;
-//        } else {
-//            todo("lex '%c'", c);
-//            exit(1);
-//        }
-//
-//        da_push(&tokens, token);
-//    } while (lexer_advance(lex));
-//    return tokens;
-//}
-
 typedef enum
 {
     ASTNODE_PROGRAM,
     ASTNODE_VAR_DECL,
     ASTNODE_VAR_ASSIGN,
     ASTNODE_BLOCK,
-    ASTNODE_EXPRESSION_STATEMENT,
     ASTNODE_IF,
+    ASTNODE_RETURN,
     ASTNODE_FN_DECL,
     ASTNODE_CALL,
+    ASTNODE_CALL_STATEMENT,
     ASTNODE_BINOP,
     ASTNODE_NUMBER,
     ASTNODE_STRING,
@@ -689,71 +530,175 @@ typedef enum
 {
     OP_PLUS,
     OP_STAR,
+
+    OP_DOUBLE_EQUALS,
     __op_types_count,
 } Operator;
 
+static_assert(__op_types_count == 3, "Cover all operators in operator_from_token_type");
 Operator operator_from_token_type(TokenType type)
 {
-    if (type == TOK_PLUS) return OP_PLUS;
-    if (type == TOK_STAR) return OP_STAR;
-    assert(0 && "Unreachable");
+    switch (type) {
+    case TOK_PLUS:          return OP_PLUS;
+    case TOK_STAR:          return OP_STAR;
+    case TOK_DOUBLE_EQUALS: return OP_DOUBLE_EQUALS;
+    default:
+        unreachableln("Token type %u in operator_from_token_type", type);
+        exit(1);
+    }
 }
 
+static_assert(__op_types_count == 3, "Cover all operators in operator_as_string");
 char *operator_as_string(Operator op)
 {
     switch (op) {
-    case OP_PLUS: return "+";
-    case OP_STAR: return "*";
+    case OP_PLUS:          return "+";
+    case OP_STAR:          return "*";
+    case OP_DOUBLE_EQUALS: return "==";
     default:
-        printf("Unreachable operator %u in operator_as_string\n", op);
+        unreachableln("Operator %u in operator_as_string", op);
         exit(1);
     }
+}
+
+typedef enum
+{
+    TYPE_INVALID = 0,
+    TYPE_NOT_DECLARED,
+    TYPE_NOT_INFERRED,
+
+    TYPE_VOID,
+    TYPE_I32,
+    TYPE_STRING,
+    TYPE_BOOL,
+
+    __types_count
+} KjudeType;
+
+static_assert(__types_count == 7, "Cover all types in type_as_string");
+char *type_as_string(KjudeType type)
+{
+    switch (type) {
+    case TYPE_INVALID:      return "Invalid";
+    case TYPE_NOT_DECLARED: return "Not declared";
+    case TYPE_NOT_INFERRED: return "Not inferred";
+
+    case TYPE_VOID:   return "void";
+    case TYPE_I32:    return "int";
+    case TYPE_STRING: return "string";
+    case TYPE_BOOL:   return "bool";
+    default:
+        unreachableln("Type %u in type_as_string", type);
+        exit(1);
+    }
+}
+
+static_assert(__types_count == 7, "Cover all types in kjude_to_c_types_conversion_table");
+static char *kjude_to_c_types_conversion_table[__types_count] = {
+    [TYPE_INVALID]      = NULL,
+    [TYPE_NOT_DECLARED] = NULL,
+    [TYPE_NOT_INFERRED] = NULL,
+    [TYPE_VOID]         = "void",
+    [TYPE_I32]          = "int32_t",
+    [TYPE_STRING]       = "char *",
+    [TYPE_BOOL]         = "int",
+};
+
+char *c_type_from_kjude_type(KjudeType type)
+{
+    if (type >= __types_count) return NULL;
+    return kjude_to_c_types_conversion_table[type];
+}
+
+static_assert(__types_count == 7, "Cover all types in KjudeValue union");
+typedef union
+{
+    char string[64];
+    bool _bool;
+    int32_t _int;
+} KjudeValue;
+
+// TODO: I need the declaration location
+typedef struct
+{
+    char name[64];
+    KjudeType ret_type;
+    char ret_type_string[64];
+} KjudeFunction;
+
+typedef struct
+{
+    KjudeFunction *items;
+    size_t count;
+    size_t capacity;
+} KjudeFunctions;
+static KjudeFunctions global_functions = {0};
+
+// TODO: then it will take KjudeFunctions as a parameter and look into the locals first (Scope strucuture within block)
+// - so it will exists also a global scope
+KjudeFunction *get_fn_by_name(char *name)
+{
+    for (size_t i = 0; i < global_functions.count; i++) {
+        KjudeFunction *fn = &global_functions.items[i];
+        if (streq(name, fn->name)) return fn;
+    }
+    return NULL;
+}
+
+// TODO: I need the declaration location
+typedef struct
+{
+    char name[64];
+    KjudeType type;
+    char type_string[64];
+} KjudeVariable;
+
+typedef struct
+{
+    KjudeVariable *items;
+    size_t count;
+    size_t capacity;
+} KjudeVariables;
+static KjudeVariables global_variables = {0};
+
+// TODO: then it will take KjudeVariables as a parameter and look into the locals first (Scope strucuture within block)
+KjudeVariable *get_var_by_name(char *name)
+{
+    for (size_t i = 0; i < global_variables.count; i++) {
+        KjudeVariable *var = &global_variables.items[i];
+        if (streq(name, var->name)) return var;
+    }
+    return NULL;
 }
 
 typedef struct ASTNode
 {
     ASTNodeType type;
+    Location loc;
     union {
-        char string_value[64];
-        int32_t int_value;
-        bool bool_value;
+        KjudeValue value;
         Operator op;
+        KjudeVariable *var;
+        KjudeFunction *fn;
+        struct {
+            KjudeFunction *fn;
+            char string[64];
+        } call;
     };
-    struct ASTNode* left;
-    struct ASTNode* right;
-    struct ASTNode* next;
+    struct ASTNode *left;
+    struct ASTNode *right;
+    struct ASTNode *next;
 } ASTNode;
 
-ASTNode* create_node(ASTNodeType type)
+ASTNode *create_node(ASTNodeType type, Location loc)
 {
-    ASTNode* node = malloc(sizeof(ASTNode));
-    *node = (ASTNode){ .type = type };
+    ASTNode *node = malloc(sizeof(ASTNode));
+    *node = (ASTNode){ .type = type, .loc = loc };
     return node;
 }
 
-//typedef enum
-//{
-//    OP_VAR_ASSIGN,
-//    OP_VAR_READ,
-//    __op_types_count
-//} OpType;
-//
-//const char *op_type_to_string(OpType type)
-//{
-//    switch (type)
-//    {
-//    case OP_VAR_READ:   return "VAR_READ";
-//    case OP_VAR_ASSIGN: return "VAR_ASSIGN";
-//
-//    default: {
-//        fprintf(stderr, "Unreachable op type %d in op_type_to_string\n", type);
-//        exit(1);
-//    }
-//    }
-//}
-
-typedef ASTNode* (*PrefixExprFn)(Parser *);
-typedef ASTNode* (*InfixExprFn)(Parser *, ASTNode *left);
+typedef ASTNode *(*PrefixExprFn)(Parser *);
+typedef ASTNode *(*InfixExprFn)(Parser *, ASTNode *left);
 
 typedef enum {
     PREC_NONE   = 0,
@@ -772,11 +717,13 @@ static inline void parser_advance(Parser *p) { p->pos++; }
 static inline Token *parser_current_token(Parser *p){ return da_get_ptr(p->tokens, p->pos); }
 #define current_token (parser_current_token(parser))
 
-Token *parser_peek(Parser *p)
+Token *parser_peek_n(Parser *p, size_t n)
 {
-    if (p->pos + 1 >= p->tokens.count) return NULL;
-    else return &p->tokens.items[p->pos + 1];
+    if (p->pos + n >= p->tokens.count) return NULL;
+    else return &p->tokens.items[p->pos + n];
 }
+
+static inline Token *parser_peek(Parser *p) { return parser_peek_n(p, 1); }
 
 void parser_expect(Parser *parser, TokenType type)
 {
@@ -791,38 +738,38 @@ void parser_expect(Parser *parser, TokenType type)
     }
 }
 
-static inline ExprRule* get_parse_rule(TokenType type)
+static inline ExprRule* get_expression_rule(TokenType type)
 {
     extern ExprRule expression_rules[];
     assert(type < __tok_types_count);
     return &expression_rules[type];
 }
 
-ASTNode* parse_number(Parser *parser)
+ASTNode *parse_number(Parser *parser)
 {
-    ASTNode* node = create_node(ASTNODE_NUMBER);
-    node->int_value = atoi(current_token->lexeme);
+    ASTNode *node = create_node(ASTNODE_NUMBER, current_token->loc);
+    node->value._int = atoi(current_token->lexeme);
     parser_advance(parser);
     return node;
 }
 
-ASTNode* parse_string(Parser *parser)
+ASTNode *parse_string(Parser *parser)
 {
-    ASTNode* node = create_node(ASTNODE_STRING);
-    strcpy(node->string_value, current_token->lexeme);
+    ASTNode *node = create_node(ASTNODE_STRING, current_token->loc);
+    strcpy(node->value.string, current_token->lexeme);
     parser_advance(parser);
     return node;
 }
 
 ASTNode *parse_expression_with_precedence(Parser *parser, Precedence precedence)
 {
-    PrefixExprFn prefix_rule = get_parse_rule(current_token->type)->prefix;
+    PrefixExprFn prefix_rule = get_expression_rule(current_token->type)->prefix;
     if (!prefix_rule) return NULL;
 
     ASTNode *expr = prefix_rule(parser);
     
-    while (precedence < get_parse_rule(current_token->type)->precedence) {
-        InfixExprFn infix_rule = get_parse_rule(current_token->type)->infix;
+    while (precedence < get_expression_rule(current_token->type)->precedence) {
+        InfixExprFn infix_rule = get_expression_rule(current_token->type)->infix;
         expr = infix_rule(parser, expr);
     }
     
@@ -831,10 +778,10 @@ ASTNode *parse_expression_with_precedence(Parser *parser, Precedence precedence)
 
 static inline ASTNode *parse_expression(Parser *parser) { return parse_expression_with_precedence(parser, PREC_NONE); }
 
-ASTNode* parse_grouping(Parser *parser)
+ASTNode *parse_grouping(Parser *parser)
 {
-    parser_advance(parser);
-    ASTNode* node = parse_expression(parser);
+    parser_advance(parser); // "("
+    ASTNode *node = parse_expression(parser);
     if (!node) {
         loc_print(current_token->loc);
         error("Expected expression, but got ");
@@ -842,18 +789,76 @@ ASTNode* parse_grouping(Parser *parser)
         printf("\n");
         exit(1);
     }
-    if (current_token->type != TOK_R_PAREN) {
-        printf("Syntax Error: Expected ')' after expression, found '%s'\n", current_token->lexeme); // TODO
-        exit(1);
-    }
+    parser_expect(parser, TOK_R_PAREN);
     parser_advance(parser);
     return node;
 }
 
+//static_assert(__types_count == 1, "Cover all types in size_of_type");
+//size_t size_of_type(KjudeType type)
+//{
+//    switch (type)
+//    {
+//        case TYPE_I32: return sizeof(int32_t);
+//        default: 
+//            errorln("Unreachable type %u in size_of_type", type);
+//            exit(1);
+//    }
+//}
+
+static_assert(__types_count == 7, "Cover all types in get_type_from_string");
+KjudeType get_type_from_string(char *type_string)
+{
+         if (streq(type_string, type_as_string(TYPE_VOID)))   return TYPE_VOID;
+    else if (streq(type_string, type_as_string(TYPE_I32)))    return TYPE_I32;
+    else if (streq(type_string, type_as_string(TYPE_STRING))) return TYPE_STRING;
+    else if (streq(type_string, type_as_string(TYPE_BOOL)))   return TYPE_BOOL;
+    else                                                      return TYPE_NOT_DECLARED;
+}
+
+KjudeType parse_type(Parser *parser, char not_declared_string[])
+{
+    if (current_token->type != TOK_IDENT) {
+        loc_print(current_token->loc);
+        error("Expecting type but got ");
+        token_print(*current_token);
+        printf("\n");
+        exit(1);
+    }
+
+    KjudeType type = TYPE_INVALID;
+
+    if (current_token->type == TOK_IDENT) {
+        type = get_type_from_string(current_token->lexeme); 
+        if (not_declared_string && type == TYPE_NOT_DECLARED) {
+            strcpy(not_declared_string, current_token->lexeme);
+        }
+        parser_advance(parser); // type
+    } else {
+        loc_print(current_token->loc);
+        error("Expecting a type, but got token ");
+        token_print(*current_token);
+        printf("\n");
+        exit(1);
+    }
+
+    return type;
+}
+
+KjudeType infer_type(Parser *parser)
+{
+    Token *next = parser_peek(parser);
+    if (next->type == TOK_INTEGER) return TYPE_I32;
+    if (next->type == TOK_STRING)  return TYPE_STRING;
+    return TYPE_NOT_INFERRED;
+}
+
 ASTNode *parse_var_decl(Parser *parser)
 {
-    parser_advance(parser); // "let"
-    ASTNode *node = create_node(ASTNODE_VAR_DECL);
+    ASTNode *node = create_node(ASTNODE_VAR_DECL, current_token->loc);
+
+    node->var = NULL;
+    KjudeVariable var = {0};
 
     if (current_token->type != TOK_IDENT) {
         loc_print(current_token->loc);
@@ -863,20 +868,32 @@ ASTNode *parse_var_decl(Parser *parser)
         exit(1);
     }
 
-    strcpy(node->string_value, current_token->lexeme);
-    parser_advance(parser); // varname
+    strcpy(var.name, current_token->lexeme);
+    parser_advance(parser); // var name
+    parser_expect(parser, TOK_COLON);
 
-    parser_expect(parser, TOK_EQUALS);
-    node->left = parse_expression(parser);
-    if (!node->left) {
-        loc_print(current_token->loc);
-        error("Expected expression, but got ");
-        token_print(*current_token);
-        printf("\n");
-        exit(1);
+    if (current_token->type == TOK_EQUALS) {
+        var.type = infer_type(parser);
+    } else {
+        var.type = parse_type(parser, var.type_string);
+    }
+
+    if (current_token->type != TOK_SEMICOLON) {
+        parser_expect(parser, TOK_EQUALS);
+        node->left = parse_expression(parser);
+        if (!node->left) {
+            loc_print(current_token->loc);
+            error("Expected expression, but got ");
+            token_print(*current_token);
+            printf("\n");
+            exit(1);
+        }
     }
 
     parser_expect(parser, TOK_SEMICOLON);
+
+    da_push(&global_variables, var);
+    node->var = da_get_last(global_variables);
     return node;
 }
 
@@ -886,21 +903,21 @@ ASTNode *parse_block(Parser *parser)
 {
     parser_advance(parser); // '{'
 
-    ASTNode *root = create_node(ASTNODE_BLOCK);
+    ASTNode *root = create_node(ASTNODE_BLOCK, current_token->loc);
 
-    Token *next_token = parser_peek(parser);
-    if (!next_token) {
+    if (!current_token) {
         printf("ERROR: TODO %u\n", __LINE__);
         exit(1);
     }
-    if (next_token->type == TOK_R_CUPAREN) { // empty block
+    
+    if (current_token->type == TOK_R_CUPAREN) { // empty block
         parser_advance(parser); // '}'
         return root;
     }
 
     root->left = parse_statement(parser); 
     if (root->left) {
-        ASTNode* current_node = root->left;
+        ASTNode *current_node = root->left;
         while (current_token->type != TOK_R_CUPAREN) {
             if (current_token->type == TOK_EOF) {
                 printf("ERROR: TODO %u\n", __LINE__);
@@ -917,8 +934,11 @@ ASTNode *parse_block(Parser *parser)
 
 ASTNode *parse_fn_decl(Parser *parser)
 {
-    parser_advance(parser); // "fn"
-    ASTNode *node = create_node(ASTNODE_FN_DECL);
+    ASTNode *node = create_node(ASTNODE_FN_DECL, current_token->loc);
+    parser->current_function = node;
+
+    node->fn = NULL;
+    KjudeFunction fn = {0};
 
     if (current_token->type != TOK_IDENT) {
         loc_print(current_token->loc);
@@ -928,7 +948,7 @@ ASTNode *parse_fn_decl(Parser *parser)
         exit(1);
     }
 
-    strcpy(node->string_value, current_token->lexeme);
+    strcpy(fn.name, current_token->lexeme);
     parser_advance(parser); // function name
 
     parser_expect(parser, TOK_COLON);
@@ -937,26 +957,34 @@ ASTNode *parse_fn_decl(Parser *parser)
     parser_expect(parser, TOK_R_PAREN);
 
     if (current_token->type == TOK_ARROW) {
-        parser_expect(parser, TOK_IDENT); // return type
+        parser_advance(parser); // "->"
+        fn.ret_type = parse_type(parser, fn.ret_type_string);
+    } else {
+        fn.ret_type = TYPE_VOID;
     }
 
     parser_expect(parser, TOK_EQUALS);
+
+    da_push(&global_functions, fn);
+    node->fn = da_get_last(global_functions);
+
     node->left = parse_block(parser);
 
+    parser->current_function = NULL;
     return node;
 }
 
 ASTNode *parse_true(Parser *parser)
 {
-    ASTNode* node = create_node(ASTNODE_BOOL);
-    node->bool_value = true;
+    ASTNode *node = create_node(ASTNODE_BOOL, current_token->loc);
+    node->value._bool = true;
     parser_advance(parser);
     return node;
 }
 ASTNode *parse_false(Parser *parser)
 {
-    ASTNode* node = create_node(ASTNODE_BOOL);
-    node->bool_value = false;
+    ASTNode *node = create_node(ASTNODE_BOOL, current_token->loc);
+    node->value._bool = false;
     parser_advance(parser);
     return node;
 }
@@ -965,7 +993,7 @@ ASTNode *parse_if(Parser *parser)
 {
     parser_advance(parser); // "if"
 
-    ASTNode *node = create_node(ASTNODE_IF);
+    ASTNode *node = create_node(ASTNODE_IF, current_token->loc);
     node->left = parse_expression(parser);
     if (!node->left) {
         loc_print(current_token->loc);
@@ -978,7 +1006,7 @@ ASTNode *parse_if(Parser *parser)
         node->right = parse_block(parser);
     } else if (current_token->type == TOK_COLON) {
         parser_advance(parser); // ':'
-        ASTNode *block = create_node(ASTNODE_BLOCK);
+        ASTNode *block = create_node(ASTNODE_BLOCK, current_token->loc);
         block->left = parse_statement(parser);
         node->right = block;
     } else {
@@ -988,6 +1016,27 @@ ASTNode *parse_if(Parser *parser)
         printf("\n");
         exit(1);
     }
+    return node;
+}
+
+ASTNode *parse_return(Parser *parser)
+{
+    if (!parser->current_function) {
+        loc_print(current_token->loc);
+        errorln("Unexpected return outside of function");
+        exit(1);
+    }
+
+    ASTNode *node = create_node(ASTNODE_RETURN, current_token->loc);
+    node->left = parser->current_function;
+
+    parser_advance(parser); // "return"
+
+    if (current_token->type != TOK_SEMICOLON) {
+        node->right = parse_expression(parser);
+    }
+    parser_expect(parser, TOK_SEMICOLON);
+
     return node;
 }
 
@@ -1007,10 +1056,13 @@ ASTNode *parse_expression_list(Parser *parser)
 
 ASTNode *parse_call(Parser *parser)
 {
-    ASTNode *node = create_node(ASTNODE_CALL);
+    ASTNode *node = create_node(ASTNODE_CALL, current_token->loc);
 
     Token *called = current_token;
-    strcpy(node->string_value, called->lexeme);
+
+    node->call.fn = get_fn_by_name(called->lexeme);
+    strcpy(node->call.string, called->lexeme);
+
     parser_advance(parser); // called
 
     parser_advance(parser); // '('
@@ -1020,21 +1072,23 @@ ASTNode *parse_call(Parser *parser)
     return node;
 }
 
-ASTNode* parse_ident(Parser *parser)
+ASTNode *parse_ident(Parser *parser)
 {
     Token *next = parser_peek(parser); 
     if (next && next->type == TOK_L_PAREN) return parse_call(parser);
 
-    ASTNode* node = create_node(ASTNODE_IDENT);
-    strcpy(node->string_value, current_token->lexeme);
+    ASTNode *node = create_node(ASTNODE_IDENT, current_token->loc);
+
+    node->var = get_var_by_name(current_token->lexeme);
+    strcpy(node->value.string, current_token->lexeme);
     parser_advance(parser);
     return node;
 }
 
 ASTNode *parse_var_assignment(Parser *parser)
 {
-    ASTNode *node = create_node(ASTNODE_VAR_ASSIGN);
-    strcpy(node->string_value, current_token->lexeme);
+    ASTNode *node = create_node(ASTNODE_VAR_ASSIGN, current_token->loc);
+    strcpy(node->value.string, current_token->lexeme);
     parser_advance(parser);
     parser_expect(parser, TOK_EQUALS);
     node->left = parse_expression(parser);
@@ -1052,10 +1106,10 @@ ASTNode *parse_var_assignment(Parser *parser)
 ASTNode *parse_binary(Parser *parser, ASTNode *left)
 {
     Token *op_token = current_token;
-    ASTNode* node = create_node(ASTNODE_BINOP);
+    ASTNode *node = create_node(ASTNODE_BINOP, current_token->loc);
     node->op = operator_from_token_type(op_token->type);
     parser_advance(parser);
-    ExprRule *rule = get_parse_rule(op_token->type);
+    ExprRule *rule = get_expression_rule(op_token->type);
     node->left = left;
     node->right = parse_expression_with_precedence(parser, rule->precedence);
     if (!node->right) {
@@ -1068,13 +1122,12 @@ ASTNode *parse_binary(Parser *parser, ASTNode *left)
     return node;
 }
 
-static_assert(__tok_types_count == 24, "Cover all token types in expression_rules table");
+static_assert(__tok_types_count == 23, "Cover all token types in expression_rules table");
 ExprRule expression_rules[__tok_types_count] = {
-    [TOK_NONE]       = {NULL, NULL, PREC_NONE},
+    // No expression rules related to these tokens
     [TOK_INVALID]    = {NULL, NULL, PREC_NONE},
-    [TOK_LET]        = {NULL, NULL, PREC_NONE},
     [TOK_IF]         = {NULL, NULL, PREC_NONE},
-    [TOK_FN]         = {NULL, NULL, PREC_NONE},
+    [TOK_RETURN]     = {NULL, NULL, PREC_NONE},
     [TOK_L_SQPAREN]  = {NULL, NULL, PREC_NONE},
     [TOK_R_SQPAREN]  = {NULL, NULL, PREC_NONE},
     [TOK_L_CUPAREN]  = {NULL, NULL, PREC_NONE},
@@ -1086,156 +1139,83 @@ ExprRule expression_rules[__tok_types_count] = {
     [TOK_ARROW]      = {NULL, NULL, PREC_NONE},
     [TOK_EOF]        = {NULL, NULL, PREC_NONE},
 
-    [TOK_IDENT]   = {parse_ident,    NULL,         PREC_NONE},
-    [TOK_INTEGER] = {parse_number,   NULL,         PREC_NONE},
-    [TOK_STRING]  = {parse_string,   NULL,         PREC_NONE},
-    [TOK_TRUE]    = {parse_true,     NULL,         PREC_NONE},
-    [TOK_FALSE]   = {parse_false,    NULL,         PREC_NONE},
+    // Primaries
+    [TOK_IDENT]   = {parse_ident,  NULL, PREC_NONE},
+    [TOK_INTEGER] = {parse_number, NULL, PREC_NONE},
+    [TOK_STRING]  = {parse_string, NULL, PREC_NONE},
+    [TOK_TRUE]    = {parse_true,   NULL, PREC_NONE},
+    [TOK_FALSE]   = {parse_false,  NULL, PREC_NONE},
 
-    [TOK_L_PAREN] = {parse_grouping, NULL,         PREC_NONE},
-    [TOK_R_PAREN] = {NULL,           NULL,         PREC_NONE},
+    // Grouping
+    [TOK_L_PAREN] = {parse_grouping, NULL, PREC_NONE},
+    [TOK_R_PAREN] = {NULL,           NULL, PREC_NONE},
 
-    [TOK_PLUS]    = {NULL,           parse_binary, PREC_TERM},
-    [TOK_STAR]    = {NULL,           parse_binary, PREC_FACTOR},
+    // Arithmetic operators
+    [TOK_PLUS]    = {NULL, parse_binary, PREC_TERM},
+    [TOK_STAR]    = {NULL, parse_binary, PREC_FACTOR},
+
+    // Logical operators
+    [TOK_DOUBLE_EQUALS] = {NULL, parse_binary, PREC_TERM},
 };
 
-typedef enum
+ASTNode *parse_call_statement(Parser *parser)
 {
-    VAR_GLOBAL,
-    //VAR_LOCAL,
-    __variable_kinds_count
-} VariableKind;
-
-typedef union
-{
-    int32_t i32;
-} KjudeValue;
-
-//typedef struct
-//{
-//    OpType type;
-//    union {
-//        struct { // Vars
-//            VariableKind var_kind;
-//            size_t var_index;
-//            KjudeValue value; // OP_GLOB_VAR_ASSIGN
-//        };
-//    };
-//} Op;
-
-//typedef struct
-//{
-//    Op *items;
-//    size_t count;
-//    size_t capacity;
-//} Ops;
-
-typedef enum
-{
-    TYPE_I32,
-    __types_count
-} KjudeType;
-
-size_t size_of_type(KjudeType type)
-{
-    static_assert(__types_count == 1, "Cover all types in size_of_type");
-    switch (type)
-    {
-        case TYPE_I32: return sizeof(int32_t);
-        default: 
-            errorln("Unreachable");
-            exit(1);
-    }
-}
-
-typedef struct
-{
-    size_t index;  
-    VariableKind kind;
-    char *name;
-    Location loc;
-    KjudeType type;
-    bool initialized;
-    KjudeValue value;
-} Variable;
-
-typedef struct
-{
-    Variable *items;
-    size_t count;
-    size_t capacity;
-} Variables;
-Variables global_vars = {0};
-
-size_t global_var_index_by_name(char *var_name)
-{
-    da_enumerate (global_vars, i, var) {
-        if (streq(var_name, var->name))
-            return i;
-    }
-    return INDEX_NOT_FOUND;
-}
-
-void global_vars_dump()
-{
-    printf("Global Variables:");
-    if (da_is_empty(&global_vars)) printf(" empty\n");
-    else {
-        printf("\n");
-        for (size_t i = 0; i < global_vars.count; i++) {
-            printf("  %zu: %s\n", i, global_vars.items[i].name);
-        }
-    }
-}
-
-ASTNode *parse_expression_statement(Parser *parser)
-{
-    ASTNode *node = create_node(ASTNODE_EXPRESSION_STATEMENT);
-    node->left = parse_expression(parser);
-    if (!node->left) {
-        loc_print(current_token->loc);
-        error("Expected expression, but got ");
-        token_print(*current_token);
-        printf("\n");
-        exit(1);
-    }
+    ASTNode *node = create_node(ASTNODE_CALL_STATEMENT, current_token->loc);
+    node->left = parse_call(parser);
     parser_expect(parser, TOK_SEMICOLON);
     return node;
 }
 
+static_assert(__astnode_types_count == 14, "Cover all ast node types in parsing");
 ASTNode *parse_statement(Parser *parser)
 {
     ASTNode *node = NULL;
     Token *token = current_token;
     switch (token->type) {
-        case TOK_LET: {
-            node = parse_var_decl(parser);
-        } break;
-
         case TOK_IF: {
             node = parse_if(parser);
         } break;
 
-        case TOK_FN: {
-            node = parse_fn_decl(parser);
+        case TOK_RETURN: {
+            node = parse_return(parser);
         } break;
 
         case TOK_IDENT: {
             Token *next = parser_peek(parser);
             if (next && next->type == TOK_EQUALS) {
                 node = parse_var_assignment(parser);
+            } else if (next && next->type == TOK_COLON) {
+                next = parser_peek_n(parser, 2);
+                if (next->type == TOK_L_PAREN) {
+                    node = parse_fn_decl(parser);
+                } else {
+                    node = parse_var_decl(parser);
+                }
+            } else if (next && next->type == TOK_L_PAREN) {
+                node = parse_call_statement(parser);
             } else {
-                node = parse_expression_statement(parser);
+                loc_print(token->loc);
+                error("Expecting a statement, but got ");
+                token_print(*token);
+                printf("\n");
+                exit(1);
             }
         } break;
 
+        case TOK_INVALID: {
+            loc_print(token->loc);
+            errorln("Invalid token \"%s\" starting a statement", token->lexeme);
+            exit(1);
+        }
+
         default:
-            if (token->type < __tok_types_count) {
-                node = parse_expression_statement(parser);
-            } else {
-                printf("Unreachable token "); token_print(*current_token); printf(" in parse_statement\n");
-                exit(1);
-            }
+            loc_print(token->loc);
+            error("Unexpected token ");
+            token_print(*token);
+            printf(" starting a statement\n");
+            loc_print(token->loc);
+            note("A statement is a declaration, an assignment or a function call");
+            exit(1);
     }
 
     return node;
@@ -1243,8 +1223,8 @@ ASTNode *parse_statement(Parser *parser)
 
 ASTNode *parse_program(Parser *parser)
 {
-    ASTNode* ast = create_node(ASTNODE_PROGRAM);
-    ASTNode* node = ast;
+    ASTNode *ast = create_node(ASTNODE_PROGRAM, current_token->loc);
+    ASTNode *node = ast;
 
     while (current_token->type != TOK_EOF) {
         node->next = parse_statement(parser);
@@ -1254,44 +1234,6 @@ ASTNode *parse_program(Parser *parser)
     return ast;
 }
 
-//bool parser_can_advance(Parser *p) { return p->i+1 < p->tokens.count; }
-//bool parser_advance(Parser *p)
-//{
-//    if (!parser_can_advance(p)) return false;
-//    p->i++;
-//    return true;
-//}
-//
-//Token parser_get(Parser *p)
-//{
-//    if (p->i < p->tokens.count) return p->tokens.items[p->i];
-//    else return tok_none();
-//}
-//
-//Token parser_peek(Parser *p)
-//{
-//    if (parser_can_advance(p)) return p->tokens.items[p->i+1];
-//    else return tok_none();
-//}
-//
-//Token parser_next(Parser *p)
-//{
-//    if (parser_can_advance(p)) {
-//        p->i++;
-//        return parser_get(p);
-//    } else return tok_none();
-//}
-//
-//bool parser_expect(Parser *p, TokenType expected) { return parser_peek(p).type == expected; }
-//
-//bool parser_match(Parser *p, TokenType type)
-//{
-//    if (parser_expect(p, type)) {
-//        p->i++;
-//        return true;
-//    } else return false;
-//}
-//
 //void error_expected_token_type(TokenType expected, Token victim, Token from)
 //{
 //    if (victim.type == TOK_NONE) {
@@ -1356,133 +1298,6 @@ ASTNode *parse_program(Parser *parser)
 //    printf(" undeclared variable `%s`.\n", tok.lexeme);
 //    exit(1);
 //}
-//
-//Ops parser_parse(Parser *parser)
-//{
-//    Ops ops = {0};
-//    Token tok;
-//    static_assert(__op_types_count == 2, "Cover all op types in parser_parse");
-//    do {
-//        tok = parser_get(parser);
-//        if (tok.type == TOK_NONE) break;
-//        switch (tok.type)
-//        {
-//            case TOK_IDENT:
-//            {
-//                if (parser_match(parser , TOK_L_PAREN)) {
-//                    todo("parse funargs");
-//                    // TODO: parse args (every arg is an expr)
-//                    if (parser_expect(parser, TOK_INTEGER)) {
-//                        //Token t_val = parser_next(parser);
-//                        //Op op = {
-//                        //    .type = OP_LOAD16,
-//                        //    .val_i32 = atoi(t_val.lexeme)
-//                        //};
-//                        //da_push(&ops, op);
-//                    } else if (parser_expect(parser, TOK_IDENT)) {
-//                        Token t_var = parser_next(parser);
-//                        size_t var_i = global_var_index_by_name(t_var.lexeme);
-//                        if (var_i == INDEX_NOT_FOUND) error_undeclared_variable(tok, "");
-//                        Op op = {
-//                            .type = OP_VAR_READ,
-//                            .var_kind = VAR_GLOBAL,
-//                            .var_index = var_i
-//                        };
-//                        da_push(&ops, op);
-//                    } else {
-//                        TokenType types[2] = {TOK_INTEGER, TOK_IDENT};
-//                        error_expected_token_types(types, 2, parser_get(parser), tok);
-//                    }
-//                    parser_match_type_else_error(parser, TOK_R_PAREN, tok);
-//                    parser_match_type_else_error(parser, TOK_SEMICOLON, tok);
-//                    //if (streq(tok.lexeme, "print")) {  } // TODO
-//                    todo("functions are not yet supported");
-//                    exit(1);
-//                    break;
-//                } else if (parser_expect(parser, TOK_EQUALS)) {
-//                    // TODO: look into local variables first then into global variables
-//                    size_t var_i = global_var_index_by_name(tok.lexeme);
-//                    if (var_i == INDEX_NOT_FOUND) error_undeclared_variable(tok, "trying to assign");
-//                    //da_push_many(op, parser_parse_expr(parser)); // TODO
-//                    Token t_val = parser_next(parser);
-//                    parser_match_type_else_error(parser, TOK_INTEGER, tok);
-//                    parser_match_type_else_error(parser, TOK_SEMICOLON, tok);
-//
-//                    int32_t value = (int32_t)atoi(t_val.lexeme);
-//                    Op op = {
-//                        .type = OP_VAR_ASSIGN,
-//                        .var_kind = VAR_GLOBAL,
-//                        .var_index = var_i,
-//                        .value.i32 = value
-//                    };
-//                    da_push(&ops, op);
-//                } else {
-//                    errorln("unknown word `%s`", tok.lexeme);
-//                    exit(1);
-//                }
-//            } break;  
-//            case TOK_LET:
-//            {
-//                parser_match_type_else_error(parser, TOK_IDENT, tok);
-//                Token t_var_name = parser_get(parser);
-//                size_t var_i = global_var_index_by_name(t_var_name.lexeme);
-//                if (var_i != INDEX_NOT_FOUND) {
-//                    Variable var = global_vars.items[var_i]; 
-//                    loc_print(tok.loc);
-//                    printf(": ");
-//                    errorln("Redeclaration of variable `%s`.", var.name);
-//                    loc_print(var.loc);
-//                    printf(": ");
-//                    note(" Declared here the first time.");
-//                    exit(1);
-//                }
-//                var_i = global_vars.count;
-//                Variable var = {
-//                    .kind = VAR_GLOBAL,
-//                    .type = TYPE_I32,
-//                    .index = global_vars.count,
-//                    .name = strdup(t_var_name.lexeme),
-//                    .loc = loc_clone(tok.loc)
-//                };
-//                if (parser_match(parser, TOK_EQUALS)) {
-//                    Token t_val = parser_get(parser);
-//                    parser_match_type_else_error(parser, TOK_INTEGER, tok); // TODO: per ora
-//                    parser_match_type_else_error(parser, TOK_SEMICOLON, t_val);
-//                    var.initialized = true;
-//                    var.value.i32 = (int32_t)atoi(t_val.lexeme); // TODO: solo per ora, poi usero' atol per bene
-//                } else if (parser_match(parser, TOK_SEMICOLON)) {
-//                    // NOTE: nothing to do
-//                } else {
-//                    TokenType types[] = {TOK_SEMICOLON, TOK_EQUALS};
-//                    error_expected_token_types(types, sizeof(types), parser_get(parser), tok);
-//                }
-//                da_push(&global_vars, var);
-//            } break;
-//            case TOK_IF:
-//            {
-//                Token t_condition = parser_get(parser);
-//                (void)t_condition;
-//                if (!(parser_match(parser, TOK_TRUE) || parser_match(parser, TOK_FALSE))) {
-//                    todo("parse if condition");
-//                    exit(1);
-//                }
-//                parser_match_type_else_error(parser, TOK_L_CUPAREN, tok);
-//                todo("parse if body"); // TODO (segnare da qualche parte, in uno stack magari, che si e' aperto
-//                                       //      un if/blocco e che si si aspetta venga chiuso ad un certo punto)
-//                // TODO: pensare all'op per if
-//            } break;
-//
-//            case TOK_NONE: {
-//                fprintf(stderr, "Unreachable\n");
-//                exit(1);
-//            }
-//            default: 
-//                todo("parse token type %s", token_type_as_string(tok.type));
-//                exit(1);
-//        }
-//    } while (parser_advance(parser));
-//    return ops;
-//}
 
 char *shift_arg(int *argc, char ***argv)
 {
@@ -1530,7 +1345,12 @@ bool run_cmd(char **cmd)
     }
 }
 
-static_assert(__astnode_types_count == 13, "Cover all ast node types in generate_c_code");
+static inline void generate_fn_signature(KjudeFunction *fn, FILE *f)
+{
+    fprintf(f, "%s %s(void)", c_type_from_kjude_type(fn->ret_type), fn->name);
+}
+
+static_assert(__astnode_types_count == 14, "Cover all ast node types in generate_c_code");
 void generate_c_code(ASTNode *node, FILE *f)
 {
     if (!node) return;
@@ -1539,25 +1359,45 @@ void generate_c_code(ASTNode *node, FILE *f)
     case ASTNODE_PROGRAM: {
         fprintf(f, "#include <stdint.h>\n\n");
 
-        //da_foreach (global_vars, var)
-        //    fprintf(f, "int32_t %s = %d;\n", var->name, 0);
-        //fprintf(f, "\n");
+        for (size_t i = 0; i < global_functions.count; i++) {
+            KjudeFunction *fn = &global_functions.items[i];
+            generate_fn_signature(fn, f);
+            fprintf(f, ";\n");
+        }
+        fprintf(f, "\n");
 
-        fprintf(f, "int main(void) {\n");
+        // TODO: declare global variables
+
         generate_c_code(node->next, f);
-        fprintf(f, "return 0;\n");
-        fprintf(f, "}\n");
     } break;
 
     case ASTNODE_VAR_DECL: {
-        fprintf(f, "int32_t %s = ", node->string_value);
-        generate_c_code(node->left, f);
+        if (node->var->type == TYPE_INVALID) {
+            loc_print(node->loc);
+            unreachableln("Invalid type of variable \"%s\"", node->var->name);
+            exit(1);
+        }
+        if (node->var->type == TYPE_NOT_INFERRED) {
+            loc_print(node->loc);
+            unreachableln("Could not infer type of variable \"%s\"", node->var->name);
+            exit(1);
+        }
+        if (node->var->type == TYPE_NOT_DECLARED) {
+            loc_print(node->loc);
+            errorln("Undeclared type \"%s\" for variable \"%s\"", node->var->type_string, node->var->name);
+            exit(1);
+        }
+        fprintf(f, "%s %s", c_type_from_kjude_type(node->var->type), node->var->name);
+        if (node->left) {
+            fprintf(f, " = ");
+            generate_c_code(node->left, f);
+        }
         fprintf(f, ";\n");
         generate_c_code(node->next, f);
     } break;
 
     case ASTNODE_VAR_ASSIGN: {
-        fprintf(f, "%s = ", node->string_value);
+        fprintf(f, "%s = ", node->value.string);
         generate_c_code(node->left, f);
         fprintf(f, ";\n");
         generate_c_code(node->next, f);
@@ -1570,7 +1410,7 @@ void generate_c_code(ASTNode *node, FILE *f)
         generate_c_code(node->next, f);
     } break;
 
-    case ASTNODE_EXPRESSION_STATEMENT: {
+    case ASTNODE_CALL_STATEMENT: {
         generate_c_code(node->left, f);
         fprintf(f, ";\n");
         generate_c_code(node->next, f);
@@ -1584,14 +1424,45 @@ void generate_c_code(ASTNode *node, FILE *f)
         generate_c_code(node->next, f);
     } break;
 
+    case ASTNODE_RETURN: {
+        fprintf(f, "return");
+        if (node->right) {
+            fprintf(f, " ");
+            generate_c_code(node->right, f);
+        }
+        fprintf(f, ";\n");
+        generate_c_code(node->next, f);
+    } break;
+
     case ASTNODE_FN_DECL: {
-        fprintf(f, "void %s(void) ", node->string_value);
+        if (node->fn->ret_type == TYPE_INVALID) {
+            loc_print(node->loc);
+            errorln("Invalid type as return type for function \"%s\"", node->fn->ret_type_string, node->fn->name);
+            exit(1);
+        }
+        if (node->fn->ret_type == TYPE_NOT_DECLARED) {
+            loc_print(node->loc);
+            errorln("Undeclared type \"%s\" as function return type", node->fn->ret_type_string);
+            exit(1);
+        }
+        if (streq(node->value.string, "main")) {
+            if (node->fn->ret_type != TYPE_I32) {
+                loc_print(node->loc);
+                errorln("main function must return %s, but got %s", type_as_string(TYPE_I32),
+                        type_as_string(node->fn->ret_type));
+                exit(1);
+            }
+            fprintf(f, "int main(int argc, char **argv) ");
+        } else {
+            generate_fn_signature(node->fn, f);
+            fprintf(f, " ");
+        }
         generate_c_code(node->left, f);
         generate_c_code(node->next, f);
     } break;
 
     case ASTNODE_CALL: {
-        fprintf(f, "%s(", node->string_value);
+        fprintf(f, "%s(", node->call.fn->name);
         ASTNode *elt = node->left;
         while (elt) {
             generate_c_code(elt, f);
@@ -1608,23 +1479,23 @@ void generate_c_code(ASTNode *node, FILE *f)
     } break;
 
     case ASTNODE_NUMBER: {
-        fprintf(f, "%d", node->int_value);
+        fprintf(f, "%d", node->value._int);
     } break;
 
     case ASTNODE_STRING: {
-        fprintf(f, "\"%s\"", node->string_value);
+        fprintf(f, "\"%s\"", node->value.string);
     } break;
 
     case ASTNODE_BOOL: {
-        fprintf(f, "%d", node->bool_value ? 1 : 0);    
+        fprintf(f, "%d", node->value._bool ? 1 : 0);    
     } break;
 
     case ASTNODE_IDENT: {
-        fprintf(f, "%s", node->string_value);
+        fprintf(f, "%s", node->value.string);
     } break;
 
     default:
-        printf("Unreachable ast node type %u in generate_c_code\n", node->type);
+        unreachableln("Ast node type %u in generate_c_code\n", node->type);
         exit(1);
     }
 }
@@ -1634,11 +1505,227 @@ bool compile_c(void)
     char *gcc_cmd[] = {
         "gcc",
         "-o", "kjude_output",
-        "__intermediate.c",
+        DEFAULT_KJUDE_INTERMEDIATE_C_FILE,
         "-Wall", "-Wextra",
         NULL
     };
     return run_cmd(gcc_cmd);
+}
+
+KjudeType binop_type(ASTNode *node);
+
+static_assert(__astnode_types_count == 14, "Cover all ast node types in node_type");
+KjudeType node_type(ASTNode *node)
+{
+    if (!node) {
+        unreachableln("NULL node in node_type");
+        return TYPE_INVALID;
+    }
+
+    switch (node->type) {
+
+    case ASTNODE_PROGRAM:
+    case ASTNODE_VAR_DECL:
+    case ASTNODE_VAR_ASSIGN:
+    case ASTNODE_BLOCK:
+    case ASTNODE_IF:
+    case ASTNODE_RETURN:
+    case ASTNODE_FN_DECL:
+    {
+        unreachableln("Node %u in node_type", node->type);
+        exit(1);
+    }
+
+    case ASTNODE_CALL_STATEMENT: return node_type(node->next);
+
+    case ASTNODE_CALL: {
+        if (!node->call.fn) {
+            node->call.fn = get_fn_by_name(node->call.string);
+            if (!node->call.fn) {
+                loc_print(node->loc);
+                errorln("Undeclared function \"%s\"", node->call.string);
+                exit(1);
+            }
+        }
+        // TODO: should I check for node->call.fn->ret_type ?
+        return node->call.fn->ret_type;
+    }
+
+    case ASTNODE_BINOP: return binop_type(node);
+
+    case ASTNODE_NUMBER: return TYPE_I32;
+    case ASTNODE_STRING: return TYPE_STRING;
+    case ASTNODE_BOOL: return TYPE_BOOL;
+    case ASTNODE_IDENT: {
+        KjudeVariable *var = get_var_by_name(node->value.string);
+        if (!var) {
+            todo("\"%s\" could be a function, get its type", node->value.string);
+            return TYPE_INVALID;
+        }
+        return var->type;
+    } break;
+
+    default:
+        unreachableln("Ast node type %u in node_type\n", node->type);
+        exit(1);
+    }
+
+    return TYPE_INVALID;
+}
+
+// TODO: here I can do shortcircuit optimizations
+KjudeType binop_type(ASTNode *node)
+{
+    KjudeType left  = node_type(node->left);
+    KjudeType right = node_type(node->right);
+
+    switch (node->op) {
+    case OP_PLUS:
+        if (left == right) return left;
+        break;
+    case OP_STAR:
+        if (left == right) return left;
+        break;
+
+    case OP_DOUBLE_EQUALS: return TYPE_BOOL;
+
+    default:
+        unreachableln("Operator %u in binop_type", node->op);
+        exit(1);
+    }
+
+    return TYPE_INVALID;
+}
+
+void match_type(ASTNode *node, KjudeType type)
+{
+    KjudeType n_type = node_type(node);
+    if (n_type != type) {
+        loc_print(node->loc);
+        errorln("Expected type \"%s\", but got \"%s\"", type_as_string(type), type_as_string(n_type));
+        exit(1);
+    }
+}
+
+static_assert(__astnode_types_count == 14, "Cover all ast node types in type_check");
+void type_check(ASTNode *node)
+{
+    if (!node) return;
+
+    switch (node->type) {
+    case ASTNODE_PROGRAM: type_check(node->next); break;
+
+    case ASTNODE_VAR_DECL: {
+        if (node->var->type == TYPE_INVALID) {
+            loc_print(node->loc);
+            errorln("Invalid type for variable \"%s\"", node->var->name);
+            exit(1);
+        }
+        if (node->var->type == TYPE_NOT_INFERRED) {
+            node->var->type = node_type(node->left);
+        }
+        if (node->var->type == TYPE_NOT_DECLARED) {
+            loc_print(node->loc);
+            todo("search for type \"%s\" (var \"%s\") in ASTNODE_VAR_DECL", node->var->type_string, node->var->name);
+            exit(1);
+
+            if (node->var->type == TYPE_NOT_DECLARED) {
+                loc_print(node->loc);
+                errorln("Undeclared type \"%s\" for variable \"%s\"", node->var->type_string, node->var->name);
+                exit(1);
+            }
+        }
+        match_type(node->left, node->var->type);
+        type_check(node->next);
+    } break;
+
+    case ASTNODE_VAR_ASSIGN: {
+        if (node->var->type == TYPE_NOT_DECLARED) { // TODO: invalid?
+            loc_print(node->loc);
+            todo("search for type \"%s\" (var \"%s\") in ASTNODE_VAR_ASSIGN", node->var->type_string, node->var->name);
+            exit(1);
+
+            if (node->var->type == TYPE_NOT_DECLARED) {
+                loc_print(node->loc);
+                errorln("Undeclared type \"%s\" for variable \"%s\"", node->var->type_string, node->var->name);
+                exit(1);
+            }
+        }
+        match_type(node->left, node->var->type);
+        type_check(node->next);
+    } break;
+
+    case ASTNODE_BLOCK: {
+        type_check(node->left);
+        type_check(node->next);
+    } break;
+
+    case ASTNODE_CALL_STATEMENT: {
+        type_check(node->left);
+        type_check(node->next);
+    } break;
+
+    case ASTNODE_IF: {
+        match_type(node->left, TYPE_BOOL);
+        type_check(node->right);
+        type_check(node->next);
+    } break;
+
+    case ASTNODE_RETURN: {
+        match_type(node->right, node->left->fn->ret_type);
+        type_check(node->next);
+    } break;
+
+    case ASTNODE_FN_DECL: {
+        // TODO: check all parameters types
+
+        if (node->fn->ret_type == TYPE_NOT_DECLARED) { // TODO: invalid?
+            loc_print(node->loc);
+            todo("search for return type \"%s\" (function \"%s\") in ASTNODE_FN_DECL", node->fn->ret_type_string,
+                    node->fn->name);
+            exit(1);
+
+            if (node->var->type == TYPE_NOT_DECLARED) {
+                loc_print(node->loc);
+                errorln("Undeclared return type \"%s\" for function \"%s\"", node->fn->ret_type_string, node->fn->name);
+                exit(1);
+            }
+        }
+        type_check(node->left);
+        type_check(node->next);
+    } break;
+
+    case ASTNODE_CALL: {
+        if (!node->call.fn) {
+            node->call.fn = get_fn_by_name(node->call.string);
+            if (!node->call.fn) {
+                loc_print(node->loc);
+                errorln("Undeclared function \"%s\"", node->call.string);
+                exit(1);
+            }
+        }
+
+        loc_print(node->loc);
+        todo("type check call arguments matching function parameters for \"%s\"", node->call.string);
+    } break;
+
+    case ASTNODE_BINOP: {
+        todo("Get types on whom operator \"%s\" works", operator_as_string(node->op));
+        KjudeType type = TYPE_I32;
+        match_type(node->left, type);
+        match_type(node->right, type);
+    } break;
+
+    case ASTNODE_NUMBER:
+    case ASTNODE_STRING:
+    case ASTNODE_BOOL:
+    case ASTNODE_IDENT:
+        break;
+
+    default:
+        unreachableln("Ast node type %u in type_check\n", node->type);
+        exit(1);
+    }
 }
 
 int main(int argc, char **argv)
@@ -1660,7 +1747,7 @@ int main(int argc, char **argv)
 
     Lexer lexer = lexer_new(source_path);
     Tokens tokens = lexer_lex(&lexer);
-#if true
+#if DEBUG
     printf("Tokens (%zu):\n", tokens.count);
     da_foreach (tokens, t) {
         loc_print(t->loc);
@@ -1685,10 +1772,19 @@ int main(int argc, char **argv)
     time_print("Parsing");
     /// End Parsing
 
+    /// Begin Type checking
+    time_from_here();
+
+    type_check(ast);
+
+    time_to_here();
+    time_print("Type checking");
+    /// End Type checking
+
     /// Begin Generation
     time_from_here();
 
-    char *c_filename = "__intermediate.c";
+    char *c_filename = DEFAULT_KJUDE_INTERMEDIATE_C_FILE;
     FILE *c_file = fopen(c_filename, "w");
     if (c_file == NULL) {
         fprintf(stderr, "Could not open file `%s`\n", c_filename);

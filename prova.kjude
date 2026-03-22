@@ -1,7 +1,5 @@
-fn foo : () = {
-    print("yeah");
-}
+foo : (a: int) = { }
 
-fn main : () = {
-    foo();
+main : () -> int = {
+    x := 67;
 }

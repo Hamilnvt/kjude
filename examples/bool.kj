@@ -1,0 +1,11 @@
+get_true : () -> bool = {
+    return true;
+}
+
+main : () -> int = {
+    flag : bool = get_true();
+    if flag {
+        return 1;
+    }
+    return 0;
+}
