@@ -618,55 +618,75 @@ typedef union
     int32_t _int;
 } KjudeValue;
 
-// TODO: I need the declaration location
 typedef struct
 {
+    Location loc;
     char name[64];
-    KjudeType ret_type;
-    char ret_type_string[64];
-} KjudeFunction;
+    KjudeType type;
+    char type_string[64];
+} Variable;
 
 typedef struct
 {
-    KjudeFunction *items;
+    Variable **items;
     size_t count;
     size_t capacity;
-} KjudeFunctions;
-static KjudeFunctions global_functions = {0};
+} Variables;
 
-// TODO: then it will take KjudeFunctions as a parameter and look into the locals first (Scope strucuture within block)
-// - so it will exists also a global scope
-KjudeFunction *get_fn_by_name(char *name)
+typedef struct
 {
-    for (size_t i = 0; i < global_functions.count; i++) {
-        KjudeFunction *fn = &global_functions.items[i];
-        if (streq(name, fn->name)) return fn;
+    Location loc;
+    char name[64];
+    Variables params;
+    KjudeType ret_type;
+    char ret_type_string[64];
+} Function;
+
+typedef struct
+{
+    Function **items;
+    size_t count;
+    size_t capacity;
+} Functions;
+
+typedef struct
+{
+    Functions functions;
+    Variables variables;
+} Scope;
+
+typedef struct
+{
+    Scope *items;
+    size_t count;
+    size_t capacity;
+} Scopes;
+static Scopes scopes = {0};
+
+Variable *get_variable(char *name)
+{
+    int i = scopes.count-1;
+    while (i >= 0) {
+        Variables *variables = &scopes.items[i].variables;
+        for (size_t j = 0; j < variables->count; j++) {
+            Variable *var = variables->items[j];
+            if (streq(name, var->name)) return var;
+        }
+        i--;
     }
     return NULL;
 }
 
-// TODO: I need the declaration location
-typedef struct
+Function *get_function(char *name)
 {
-    char name[64];
-    KjudeType type;
-    char type_string[64];
-} KjudeVariable;
-
-typedef struct
-{
-    KjudeVariable *items;
-    size_t count;
-    size_t capacity;
-} KjudeVariables;
-static KjudeVariables global_variables = {0};
-
-// TODO: then it will take KjudeVariables as a parameter and look into the locals first (Scope strucuture within block)
-KjudeVariable *get_var_by_name(char *name)
-{
-    for (size_t i = 0; i < global_variables.count; i++) {
-        KjudeVariable *var = &global_variables.items[i];
-        if (streq(name, var->name)) return var;
+    int i = scopes.count-1;
+    while (i >= 0) {
+        Functions *functions = &scopes.items[i].functions;
+        for (size_t j = 0; j < functions->count; j++) {
+            Function *fn = functions->items[j];
+            if (streq(name, fn->name)) return fn;
+        }
+        i--;
     }
     return NULL;
 }
@@ -675,15 +695,21 @@ typedef struct ASTNode
 {
     ASTNodeType type;
     Location loc;
+
+    KjudeType inferred_expr_type;
+
     union {
         KjudeValue value;
         Operator op;
-        KjudeVariable *var;
-        KjudeFunction *fn;
+
         struct {
-            KjudeFunction *fn;
-            char string[64];
-        } call;
+            char name[64];
+            Variable *sym;
+        } var;
+        struct {
+            char name[64];
+            Function *sym;
+        } fn;
     };
     struct ASTNode *left;
     struct ASTNode *right;
@@ -693,7 +719,11 @@ typedef struct ASTNode
 ASTNode *create_node(ASTNodeType type, Location loc)
 {
     ASTNode *node = malloc(sizeof(ASTNode));
-    *node = (ASTNode){ .type = type, .loc = loc };
+    *node = (ASTNode){
+        .type = type,
+        .loc = loc,
+        .inferred_expr_type = TYPE_NOT_INFERRED
+    };
     return node;
 }
 
@@ -845,20 +875,12 @@ KjudeType parse_type(Parser *parser, char not_declared_string[])
     return type;
 }
 
-KjudeType infer_type(Parser *parser)
-{
-    Token *next = parser_peek(parser);
-    if (next->type == TOK_INTEGER) return TYPE_I32;
-    if (next->type == TOK_STRING)  return TYPE_STRING;
-    return TYPE_NOT_INFERRED;
-}
-
 ASTNode *parse_var_decl(Parser *parser)
 {
     ASTNode *node = create_node(ASTNODE_VAR_DECL, current_token->loc);
 
-    node->var = NULL;
-    KjudeVariable var = {0};
+    node->var.sym = malloc(sizeof(Variable));
+    if (!node->var.sym) {} // TODO
 
     if (current_token->type != TOK_IDENT) {
         loc_print(current_token->loc);
@@ -868,14 +890,16 @@ ASTNode *parse_var_decl(Parser *parser)
         exit(1);
     }
 
-    strcpy(var.name, current_token->lexeme);
+    node->var.sym->loc = current_token->loc;
+    strcpy(node->var.sym->name, current_token->lexeme);
+    strcpy(node->var.name, current_token->lexeme);
     parser_advance(parser); // var name
     parser_expect(parser, TOK_COLON);
 
     if (current_token->type == TOK_EQUALS) {
-        var.type = infer_type(parser);
+        node->var.sym->type = TYPE_NOT_INFERRED;
     } else {
-        var.type = parse_type(parser, var.type_string);
+        node->var.sym->type = parse_type(parser, node->var.sym->type_string);
     }
 
     if (current_token->type != TOK_SEMICOLON) {
@@ -892,8 +916,6 @@ ASTNode *parse_var_decl(Parser *parser)
 
     parser_expect(parser, TOK_SEMICOLON);
 
-    da_push(&global_variables, var);
-    node->var = da_get_last(global_variables);
     return node;
 }
 
@@ -928,8 +950,31 @@ ASTNode *parse_block(Parser *parser)
         }
     }
     parser_expect(parser, TOK_R_CUPAREN);
-    
+
     return root;
+}
+
+Variable *parse_parameter(Parser *parser)
+{
+    Variable *var = malloc(sizeof(Variable));
+    if (!var) { } // TODO
+
+    if (current_token->type != TOK_IDENT) {
+        loc_print(current_token->loc);
+        error("Expected parameter name, but got ");
+        token_print(*current_token);
+        printf("\n");
+        exit(1);
+    }
+
+    var->loc = current_token->loc;
+    strcpy(var->name, current_token->lexeme);
+    parser_advance(parser); // var name
+    parser_expect(parser, TOK_COLON);
+
+    var->type = parse_type(parser, var->type_string);
+
+    return var;
 }
 
 ASTNode *parse_fn_decl(Parser *parser)
@@ -937,8 +982,8 @@ ASTNode *parse_fn_decl(Parser *parser)
     ASTNode *node = create_node(ASTNODE_FN_DECL, current_token->loc);
     parser->current_function = node;
 
-    node->fn = NULL;
-    KjudeFunction fn = {0};
+    node->fn.sym = malloc(sizeof(Function));
+    if (!node->fn.sym) { } // TODO
 
     if (current_token->type != TOK_IDENT) {
         loc_print(current_token->loc);
@@ -948,26 +993,38 @@ ASTNode *parse_fn_decl(Parser *parser)
         exit(1);
     }
 
-    strcpy(fn.name, current_token->lexeme);
+    node->fn.sym->loc = current_token->loc;
+    strcpy(node->fn.sym->name, current_token->lexeme);
+    strcpy(node->fn.name, current_token->lexeme);
     parser_advance(parser); // function name
 
     parser_expect(parser, TOK_COLON);
 
-    parser_expect(parser, TOK_L_PAREN); // TODO: for now, then I will have to parse the parameters list
+    parser_expect(parser, TOK_L_PAREN);
+
+    if (current_token->type != TOK_R_PAREN) {
+        Variables params = {0};
+        do {
+            Variable *param = parse_parameter(parser);
+            da_push(&params, param);
+            if (current_token->type == TOK_R_PAREN) break;
+            else if (current_token->type == TOK_COMMA)
+                parser_advance(parser); // ","
+        } while (true);
+        node->fn.sym->params = params;
+    }
     parser_expect(parser, TOK_R_PAREN);
 
     if (current_token->type == TOK_ARROW) {
         parser_advance(parser); // "->"
-        fn.ret_type = parse_type(parser, fn.ret_type_string);
+        node->fn.sym->ret_type = parse_type(parser, node->fn.sym->ret_type_string);
     } else {
-        fn.ret_type = TYPE_VOID;
+        node->fn.sym->ret_type = TYPE_VOID;
     }
 
     parser_expect(parser, TOK_EQUALS);
 
-    da_push(&global_functions, fn);
-    node->fn = da_get_last(global_functions);
-
+    // TODO: maybe if current != { we can parse a single statement, like in if but, at least here we got = to divide
     node->left = parse_block(parser);
 
     parser->current_function = NULL;
@@ -1058,12 +1115,8 @@ ASTNode *parse_call(Parser *parser)
 {
     ASTNode *node = create_node(ASTNODE_CALL, current_token->loc);
 
-    Token *called = current_token;
-
-    node->call.fn = get_fn_by_name(called->lexeme);
-    strcpy(node->call.string, called->lexeme);
-
-    parser_advance(parser); // called
+    strcpy(node->fn.name, current_token->lexeme);
+    parser_advance(parser); // function name
 
     parser_advance(parser); // '('
     node->left = parse_expression_list(parser);
@@ -1079,8 +1132,7 @@ ASTNode *parse_ident(Parser *parser)
 
     ASTNode *node = create_node(ASTNODE_IDENT, current_token->loc);
 
-    node->var = get_var_by_name(current_token->lexeme);
-    strcpy(node->value.string, current_token->lexeme);
+    strcpy(node->var.name, current_token->lexeme);
     parser_advance(parser);
     return node;
 }
@@ -1088,7 +1140,7 @@ ASTNode *parse_ident(Parser *parser)
 ASTNode *parse_var_assignment(Parser *parser)
 {
     ASTNode *node = create_node(ASTNODE_VAR_ASSIGN, current_token->loc);
-    strcpy(node->value.string, current_token->lexeme);
+    strcpy(node->var.name, current_token->lexeme);
     parser_advance(parser);
     parser_expect(parser, TOK_EQUALS);
     node->left = parse_expression(parser);
@@ -1161,7 +1213,14 @@ ExprRule expression_rules[__tok_types_count] = {
 ASTNode *parse_call_statement(Parser *parser)
 {
     ASTNode *node = create_node(ASTNODE_CALL_STATEMENT, current_token->loc);
-    node->left = parse_call(parser);
+
+    strcpy(node->fn.name, current_token->lexeme);
+    parser_advance(parser); // function name
+
+    parser_advance(parser); // '('
+    node->left = parse_expression_list(parser);
+    parser_expect(parser, TOK_R_PAREN);
+
     parser_expect(parser, TOK_SEMICOLON);
     return node;
 }
@@ -1225,6 +1284,9 @@ ASTNode *parse_program(Parser *parser)
 {
     ASTNode *ast = create_node(ASTNODE_PROGRAM, current_token->loc);
     ASTNode *node = ast;
+
+    Scope global_scope = {0};
+    da_push(&scopes, global_scope);
 
     while (current_token->type != TOK_EOF) {
         node->next = parse_statement(parser);
@@ -1345,9 +1407,19 @@ bool run_cmd(char **cmd)
     }
 }
 
-static inline void generate_fn_signature(KjudeFunction *fn, FILE *f)
+static inline void generate_fn_signature(Function *fn, FILE *f)
 {
-    fprintf(f, "%s %s(void)", c_type_from_kjude_type(fn->ret_type), fn->name);
+    fprintf(f, "%s %s(", c_type_from_kjude_type(fn->ret_type), fn->name);
+    if (da_is_empty(&fn->params)) {
+        fprintf(f, "void");
+    } else {
+        for (size_t i = 0; i < fn->params.count; i++) {
+            Variable *param = fn->params.items[i];
+            fprintf(f, "%s %s", c_type_from_kjude_type(param->type), param->name);
+            if (i < fn->params.count-1) fprintf(f, ", ");
+        }
+    }
+    fprintf(f, ")");
 }
 
 static_assert(__astnode_types_count == 14, "Cover all ast node types in generate_c_code");
@@ -1359,35 +1431,34 @@ void generate_c_code(ASTNode *node, FILE *f)
     case ASTNODE_PROGRAM: {
         fprintf(f, "#include <stdint.h>\n\n");
 
+        Functions global_functions = scopes.items[0].functions;
         for (size_t i = 0; i < global_functions.count; i++) {
-            KjudeFunction *fn = &global_functions.items[i];
+            Function *fn = global_functions.items[i];
             generate_fn_signature(fn, f);
             fprintf(f, ";\n");
         }
         fprintf(f, "\n");
 
-        // TODO: declare global variables
+        // TODO: what if they were defined at declaration? (v := 5)
+        // - maybe I should add a compile time value to the variable struct, but this is too big now
+        // - so for now I will just forbid them
+        Variables global_variables = scopes.items[0].variables;
+        if (!da_is_empty(&global_variables)) {
+            errorln("Global variables are not allowed at the moment");
+            for (size_t i = 0; i < global_variables.count; i++) {
+                Variable *var = global_variables.items[i];
+                loc_print(var->loc);
+                note("\"%s\": %s\n", var->name, type_as_string(var->type));
+            }
+            printf("\n");
+            exit(1);
+        }
 
         generate_c_code(node->next, f);
     } break;
 
     case ASTNODE_VAR_DECL: {
-        if (node->var->type == TYPE_INVALID) {
-            loc_print(node->loc);
-            unreachableln("Invalid type of variable \"%s\"", node->var->name);
-            exit(1);
-        }
-        if (node->var->type == TYPE_NOT_INFERRED) {
-            loc_print(node->loc);
-            unreachableln("Could not infer type of variable \"%s\"", node->var->name);
-            exit(1);
-        }
-        if (node->var->type == TYPE_NOT_DECLARED) {
-            loc_print(node->loc);
-            errorln("Undeclared type \"%s\" for variable \"%s\"", node->var->type_string, node->var->name);
-            exit(1);
-        }
-        fprintf(f, "%s %s", c_type_from_kjude_type(node->var->type), node->var->name);
+        fprintf(f, "%s %s", c_type_from_kjude_type(node->var.sym->type), node->var.sym->name);
         if (node->left) {
             fprintf(f, " = ");
             generate_c_code(node->left, f);
@@ -1397,7 +1468,7 @@ void generate_c_code(ASTNode *node, FILE *f)
     } break;
 
     case ASTNODE_VAR_ASSIGN: {
-        fprintf(f, "%s = ", node->value.string);
+        fprintf(f, "%s = ", node->var.name);
         generate_c_code(node->left, f);
         fprintf(f, ";\n");
         generate_c_code(node->next, f);
@@ -1435,26 +1506,16 @@ void generate_c_code(ASTNode *node, FILE *f)
     } break;
 
     case ASTNODE_FN_DECL: {
-        if (node->fn->ret_type == TYPE_INVALID) {
-            loc_print(node->loc);
-            errorln("Invalid type as return type for function \"%s\"", node->fn->ret_type_string, node->fn->name);
-            exit(1);
-        }
-        if (node->fn->ret_type == TYPE_NOT_DECLARED) {
-            loc_print(node->loc);
-            errorln("Undeclared type \"%s\" as function return type", node->fn->ret_type_string);
-            exit(1);
-        }
-        if (streq(node->value.string, "main")) {
-            if (node->fn->ret_type != TYPE_I32) {
+        if (streq(node->fn.name, "main")) {
+            if (node->fn.sym->ret_type != TYPE_I32) {
                 loc_print(node->loc);
                 errorln("main function must return %s, but got %s", type_as_string(TYPE_I32),
-                        type_as_string(node->fn->ret_type));
+                        type_as_string(node->fn.sym->ret_type));
                 exit(1);
             }
             fprintf(f, "int main(int argc, char **argv) ");
         } else {
-            generate_fn_signature(node->fn, f);
+            generate_fn_signature(node->fn.sym, f);
             fprintf(f, " ");
         }
         generate_c_code(node->left, f);
@@ -1462,7 +1523,7 @@ void generate_c_code(ASTNode *node, FILE *f)
     } break;
 
     case ASTNODE_CALL: {
-        fprintf(f, "%s(", node->call.fn->name);
+        fprintf(f, "%s(", node->fn.name);
         ASTNode *elt = node->left;
         while (elt) {
             generate_c_code(elt, f);
@@ -1491,7 +1552,7 @@ void generate_c_code(ASTNode *node, FILE *f)
     } break;
 
     case ASTNODE_IDENT: {
-        fprintf(f, "%s", node->value.string);
+        fprintf(f, "%s", node->var.name);
     } break;
 
     default:
@@ -1522,6 +1583,11 @@ KjudeType node_type(ASTNode *node)
         return TYPE_INVALID;
     }
 
+    if (node->inferred_expr_type == TYPE_INVALID)      return TYPE_INVALID;
+    if (node->inferred_expr_type != TYPE_NOT_INFERRED) return node->inferred_expr_type;
+
+    KjudeType result_type = TYPE_INVALID;
+
     switch (node->type) {
 
     case ASTNODE_PROGRAM:
@@ -1536,33 +1602,36 @@ KjudeType node_type(ASTNode *node)
         exit(1);
     }
 
-    case ASTNODE_CALL_STATEMENT: return node_type(node->next);
+    case ASTNODE_CALL_STATEMENT: result_type = node_type(node->next); break;
 
     case ASTNODE_CALL: {
-        if (!node->call.fn) {
-            node->call.fn = get_fn_by_name(node->call.string);
-            if (!node->call.fn) {
-                loc_print(node->loc);
-                errorln("Undeclared function \"%s\"", node->call.string);
-                exit(1);
-            }
+        printf("ASTNODE_CALL node %p\n", node);
+        printf("  %s -> %p\n", node->fn.name, node->fn.sym);
+        if (!node->fn.sym) {
+            Function *fn = get_function(node->fn.name);
+            if (!fn) {
+                result_type = TYPE_NOT_DECLARED;
+                break;
+            } 
+            node->fn.sym = fn;
         }
-        // TODO: should I check for node->call.fn->ret_type ?
-        return node->call.fn->ret_type;
-    }
+        result_type = node->fn.sym->ret_type;
+    } break;
 
-    case ASTNODE_BINOP: return binop_type(node);
+    case ASTNODE_BINOP: result_type = binop_type(node); break;
 
-    case ASTNODE_NUMBER: return TYPE_I32;
-    case ASTNODE_STRING: return TYPE_STRING;
-    case ASTNODE_BOOL: return TYPE_BOOL;
+    case ASTNODE_NUMBER: result_type = TYPE_I32;    break;
+    case ASTNODE_STRING: result_type = TYPE_STRING; break;
+    case ASTNODE_BOOL:   result_type = TYPE_BOOL;   break;
+
     case ASTNODE_IDENT: {
-        KjudeVariable *var = get_var_by_name(node->value.string);
-        if (!var) {
-            todo("\"%s\" could be a function, get its type", node->value.string);
-            return TYPE_INVALID;
+        Variable *var = get_variable(node->var.name);
+        if (var) {
+            result_type = var->type;
+            break;
         }
-        return var->type;
+        Function *fn = get_function(node->var.name);
+        if (fn) result_type = fn->ret_type;
     } break;
 
     default:
@@ -1570,7 +1639,8 @@ KjudeType node_type(ASTNode *node)
         exit(1);
     }
 
-    return TYPE_INVALID;
+    node->inferred_expr_type = result_type;
+    return result_type;
 }
 
 // TODO: here I can do shortcircuit optimizations
@@ -1584,6 +1654,7 @@ KjudeType binop_type(ASTNode *node)
         if (left == right) return left;
         break;
     case OP_STAR:
+        printf("Multiplication between %s and %s\n", type_as_string(left), type_as_string(right));
         if (left == right) return left;
         break;
 
@@ -1607,60 +1678,105 @@ void match_type(ASTNode *node, KjudeType type)
     }
 }
 
+void register_global_functions(ASTNode *root)
+{
+    ASTNode *current = root;
+    while (current) {
+        if (current->type == ASTNODE_BLOCK) {
+            current = current->next;
+            continue;
+        }
+        if (current->type == ASTNODE_FN_DECL) {
+            printf("Register global function '%s' -> %p\n", current->fn.name, current->fn.sym);
+            Function *fn = get_function(current->fn.name);
+            if (fn) {
+                loc_print(current->loc);
+                errorln("Redeclaration of function \"%s\"", current->fn.name);
+                loc_print(fn->loc);
+                note("First declared here");
+                exit(1);
+            }
+            da_push(&scopes.items[0].functions, current->fn.sym);
+        }
+        current = current->next;
+    }
+}
+
 static_assert(__astnode_types_count == 14, "Cover all ast node types in type_check");
 void type_check(ASTNode *node)
 {
     if (!node) return;
 
     switch (node->type) {
-    case ASTNODE_PROGRAM: type_check(node->next); break;
+    case ASTNODE_PROGRAM: {
+        register_global_functions(node);
+        type_check(node->next);
+    } break;
 
     case ASTNODE_VAR_DECL: {
-        if (node->var->type == TYPE_INVALID) {
+        Variable *var = get_variable(node->var.name);
+        if (var) {
             loc_print(node->loc);
-            errorln("Invalid type for variable \"%s\"", node->var->name);
+            errorln("Redeclaration of variable \"%s\"", node->var.name);
+            loc_print(var->loc);
+            note("First declared here");
             exit(1);
         }
-        if (node->var->type == TYPE_NOT_INFERRED) {
-            node->var->type = node_type(node->left);
+
+        if (node->var.sym->type == TYPE_NOT_INFERRED) {
+           node->var.sym->type = node_type(node->left);
         }
-        if (node->var->type == TYPE_NOT_DECLARED) {
+        if (node->var.sym->type == TYPE_NOT_DECLARED) {
             loc_print(node->loc);
-            todo("search for type \"%s\" (var \"%s\") in ASTNODE_VAR_DECL", node->var->type_string, node->var->name);
+            todo("search for type \"%s\" (var \"%s\") in ASTNODE_VAR_DECL", node->var.sym->type_string,
+                    node->var.sym->name);
             exit(1);
 
-            if (node->var->type == TYPE_NOT_DECLARED) {
+            if (node->var.sym->type == TYPE_NOT_DECLARED) {
                 loc_print(node->loc);
-                errorln("Undeclared type \"%s\" for variable \"%s\"", node->var->type_string, node->var->name);
+                errorln("Undeclared type \"%s\" for variable \"%s\"", node->var.sym->type_string,
+                        node->var.sym->name);
                 exit(1);
             }
         }
-        match_type(node->left, node->var->type);
+        if (node->var.sym->type == TYPE_INVALID) {
+            loc_print(node->loc);
+            errorln("Invalid type for variable \"%s\"", node->var.sym->name);
+            exit(1);
+        }
+        match_type(node->left, node->var.sym->type);
+        da_push(&da_get_last(scopes)->variables, node->var.sym);
         type_check(node->next);
     } break;
 
     case ASTNODE_VAR_ASSIGN: {
-        if (node->var->type == TYPE_NOT_DECLARED) { // TODO: invalid?
+        Variable *var = get_variable(node->var.name);
+        if (!var) {
             loc_print(node->loc);
-            todo("search for type \"%s\" (var \"%s\") in ASTNODE_VAR_ASSIGN", node->var->type_string, node->var->name);
+            errorln("Variable \"%s\" is not declared", node->var.name);
             exit(1);
-
-            if (node->var->type == TYPE_NOT_DECLARED) {
-                loc_print(node->loc);
-                errorln("Undeclared type \"%s\" for variable \"%s\"", node->var->type_string, node->var->name);
-                exit(1);
-            }
         }
-        match_type(node->left, node->var->type);
+        node->var.sym = var;
+        match_type(node->left, var->type);
         type_check(node->next);
     } break;
 
     case ASTNODE_BLOCK: {
-        type_check(node->left);
+        da_push(&scopes, (Scope){0}); {
+            type_check(node->left);
+        } da_pop(&scopes);
         type_check(node->next);
     } break;
 
     case ASTNODE_CALL_STATEMENT: {
+        Function *fn = get_function(node->fn.name);
+        if (!fn) {
+            loc_print(node->loc);
+            errorln("Function \"%s\" is not declared", node->fn.name);
+            exit(1);
+        }
+        node->fn.sym = fn;
+
         type_check(node->left);
         type_check(node->next);
     } break;
@@ -1672,54 +1788,79 @@ void type_check(ASTNode *node)
     } break;
 
     case ASTNODE_RETURN: {
-        match_type(node->right, node->left->fn->ret_type);
+        match_type(node->right, node->left->fn.sym->ret_type);
         type_check(node->next);
     } break;
 
     case ASTNODE_FN_DECL: {
+        Function *fn = get_function(node->fn.name);
+        if (fn) {
+            loc_print(node->loc);
+            errorln("Redeclaration of function \"%s\"", node->fn.name);
+            loc_print(fn->loc);
+            note("First declared here");
+            exit(1);
+        }
+
         // TODO: check all parameters types
 
-        if (node->fn->ret_type == TYPE_NOT_DECLARED) { // TODO: invalid?
+        if (node->fn.sym->ret_type == TYPE_NOT_DECLARED) { // TODO: invalid?
             loc_print(node->loc);
-            todo("search for return type \"%s\" (function \"%s\") in ASTNODE_FN_DECL", node->fn->ret_type_string,
-                    node->fn->name);
+            todo("search for return type \"%s\" (function \"%s\") in ASTNODE_FN_DECL", node->fn.sym->ret_type_string,
+                    node->fn.sym->name);
             exit(1);
 
-            if (node->var->type == TYPE_NOT_DECLARED) {
+            if (node->fn.sym->ret_type == TYPE_NOT_DECLARED) {
                 loc_print(node->loc);
-                errorln("Undeclared return type \"%s\" for function \"%s\"", node->fn->ret_type_string, node->fn->name);
+                errorln("Undeclared return type \"%s\" for function \"%s\"", node->fn.sym->ret_type_string, node->fn.sym->name);
                 exit(1);
             }
         }
-        type_check(node->left);
+
+        da_push(&da_get_last(scopes)->functions, node->fn.sym);
+
+        Scope fn_scope = {0};
+        for (size_t i = 0; i < node->fn.sym->params.count; i++) {
+            da_push(&fn_scope.variables, node->fn.sym->params.items[i]);
+        }
+        da_push(&scopes, fn_scope); {
+            type_check(node->left);
+        } da_pop(&scopes);
+
         type_check(node->next);
     } break;
 
     case ASTNODE_CALL: {
-        if (!node->call.fn) {
-            node->call.fn = get_fn_by_name(node->call.string);
-            if (!node->call.fn) {
-                loc_print(node->loc);
-                errorln("Undeclared function \"%s\"", node->call.string);
-                exit(1);
-            }
+        Function *fn = get_function(node->fn.name);
+        if (!fn) {
+            loc_print(node->loc);
+            errorln("Function \"%s\" is not declared", node->fn.name);
+            exit(1);
         }
+        node->fn.sym = fn;
 
         loc_print(node->loc);
-        todo("type check call arguments matching function parameters for \"%s\"", node->call.string);
+        todo("type check call arguments matching function parameters for \"%s\"", node->fn.name);
     } break;
 
     case ASTNODE_BINOP: {
-        todo("Get types on whom operator \"%s\" works", operator_as_string(node->op));
-        KjudeType type = TYPE_I32;
-        match_type(node->left, type);
-        match_type(node->right, type);
+        type_check(node->left);
+        type_check(node->right);
+    } break;
+
+    case ASTNODE_IDENT: {
+        Variable *var = get_variable(node->var.name);
+        if (!var) {
+            loc_print(node->loc);
+            errorln("Variable \"%s\" is not declared", node->var.name);
+            exit(1);
+        }
+        node->var.sym = var;
     } break;
 
     case ASTNODE_NUMBER:
     case ASTNODE_STRING:
     case ASTNODE_BOOL:
-    case ASTNODE_IDENT:
         break;
 
     default:

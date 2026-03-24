@@ -1,5 +1,8 @@
-foo : (a: int) = { }
+double_int : (a: int) -> int = {
+    return 2*a; 
+}
 
 main : () -> int = {
     x := 67;
+    x = double_int(x);
 }

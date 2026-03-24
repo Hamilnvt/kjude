@@ -1,10 +1,9 @@
 #include <stdint.h>
 
-void foo(void);
 int32_t main(void);
 
-void foo(void) {
-}
 int32_t main(void) {
-int32_t x = 67;
+int32_t a = 10;
+int32_t b = 20;
+return a + b;
 }
