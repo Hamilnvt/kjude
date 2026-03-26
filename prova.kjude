@@ -1,8 +1,8 @@
-double_int : (a: int) -> int = {
-    return 2*a; 
+double_int : (a: int, b: bool) -> int = {
+    return (2*a); 
 }
 
 main : () -> int = {
-    x := 67;
+    x := double_int(5);
     x = double_int(x);
 }

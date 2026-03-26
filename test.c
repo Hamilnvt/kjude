@@ -53,7 +53,7 @@ int main(int argc, char **argv) {
 
         if (is_negative_test) {
             if (exit_code != 0) {
-                printf("\033[32mPASS\033[0m (Expected failure, got %d)\n", exit_code);
+                printf("\033[32mPASS\033[0m\n");
                 passed++;
             } else {
                 printf("\033[31mFAIL\033[0m (Expected failure, but compiled successfully)\n");
