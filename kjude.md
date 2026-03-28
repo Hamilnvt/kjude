@@ -1,5 +1,6 @@
 # Kjude ideas
 
+- reference counting
 - autodereference
 - NO null pointers (Option)
 - NO pointer arithmetics

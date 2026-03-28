@@ -1,8 +1,15 @@
-double_int : (a: int, b: bool) -> int = {
-    return (2*a); 
-}
+//S : struct = {
+//    a: int;
+//    s: string;
+//    L: [bool];
+//}
+
+//a: int;
+//b: int;
+b: int;
 
 main : () -> int = {
-    x := double_int(5);
-    x = double_int(x);
+    a: int;
+    c: int = 34;
+    c = 4;
 }
