@@ -1,15 +1,23 @@
-//S : struct = {
-//    a: int;
-//    s: string;
-//    L: [bool];
+//print: (s: S) = { // cosi' non funziona
+//    
 //}
 
-//a: int;
-//b: int;
-b: int;
+S : struct = {
+    x: int;
+
+    //print: (s: S) = {
+    //    println("S = \{\n");
+    //    println("x = {s.x}");
+    //    println("\}\n");
+    //}
+}
+
+//print: (s: S) = {
+//    
+//}
 
 main : () -> int = {
-    a: int;
-    c: int = 34;
-    c = 4;
+    s: S;
+    s.x = 5;
+    //print(s);
 }
