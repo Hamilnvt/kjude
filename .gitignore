@@ -5,3 +5,6 @@ kjude
 kjude_output
 test
 __kjude_intermediate.c
+ast.dot
+ast.png
+ast.svg

@@ -20,6 +20,8 @@
 //   > structs and functions definitions (must declare a 'bare' variable to hold it)
 // - initialize global variables
 // - default values for struct fields and function parameters
+// - buffered output
+// - type checking function I must ensure that there is a return and that it's of the correct type
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -37,6 +39,7 @@
 
 #define INDEX_NOT_FOUND ((size_t)-1)
 #define DEFAULT_KJUDE_INTERMEDIATE_C_FILE "__kjude_intermediate.c"
+#define KJUDE_FILE_EXTENSION "kj"
 
 static inline bool streq(const char *s1, const char *s2) { return strcmp((s1), (s2)) == 0; }
 
@@ -437,11 +440,6 @@ Lexer lexer_new(char *file_path)
     da_fit(&source);
     lexer.source = source.items;
 
-#if DEBUG
-    printf("\nSource code:\n");
-    printf("%s\n", lexer.source);
-#endif // DEBUG
-
     lexer.loc = loc_new(file_path);
     return lexer;
 }
@@ -772,6 +770,8 @@ typedef struct TypeInfo
         } fn;
         struct {
             TypeInfo *elts_type;
+            bool is_sized;
+            size_t size;
         } list;
         struct {
             StructFields fields;
@@ -785,7 +785,7 @@ void generate_type(TypeInfo *type, FILE *f)
     switch (type->kind) {
     case KIND_NOT_DECLARED:
     case KIND_NOT_INFERRED:
-        unreachableln("In type generation I should have already eliminated KIND_NOT_DECLARED and KIND_NOT_INFERRED");
+        unreachableln("Type checking should have resolved KIND_NOT_DECLARED and KIND_NOT_INFERRED");
         exit(1);
 
     case KIND_PRIMITIVE:
@@ -845,7 +845,7 @@ bool _are_types_equal(TypeInfo *a, TypeInfo *b, bool report_errors, Location *lo
     case KIND_NOT_DECLARED: return true; // TODO: not sure
     case KIND_NOT_INFERRED: return true; // TODO: not sure
     case KIND_PRIMITIVE:    return a->primitive == b->primitive;
-    case KIND_LIST:         return a->primitive == b->primitive;
+    case KIND_LIST:         return _are_types_equal(a->list.elts_type, b->list.elts_type, report_errors, loc_a, loc_b);
     case KIND_FUNCTION: {
         size_t count_a = a->fn.params.count;
         size_t count_b = b->fn.params.count;
@@ -920,6 +920,7 @@ void type_print(TypeInfo *type)
     case KIND_LIST:
         printf("[");
         type_print(type->list.elts_type);
+        if (type->list.is_sized) printf(", %zu", type->list.size);
         printf("]");
         break;
 
@@ -1118,8 +1119,13 @@ typedef struct ASTNode
             ASTNode *rhs;
         } assign; // ASSIGNMENT
         union {
-            ASTNode *fn_block;
-            ASTNode *var_expr;
+            struct {
+                ASTNode *block;
+                ASTNode *ret;
+            } fn;
+            struct {
+                ASTNode *expr;
+            } var;
         } decl; // DECLARATION
     };
     ASTNode *next; // all statements, lists
@@ -1170,17 +1176,20 @@ Token *parser_peek_n(Parser *p, size_t n)
 
 static inline Token *parser_peek(Parser *p) { return parser_peek_n(p, 1); }
 
-void parser_expect(Parser *parser, TokenType type)
+Token *parser_expect(Parser *parser, TokenType type)
 {
     Token *token = current_token;
-    if (token->type == type) parser_advance(parser);
-    else {
+    if (token->type == type) {
+        parser_advance(parser);
+        return token;
+    } else {
         loc_print(current_token->loc);
         error("Expecting token \"%s\", but got token ", token_type_as_string(type));
         token_print(token);
         printf("\n");
         exit(1);
     }
+    return NULL;
 }
 
 static inline ExprRule* get_expression_rule(TokenType type)
@@ -1279,11 +1288,18 @@ TypeInfo *parse_type(Parser *parser)
         parser_advance(parser); // type
         return type;
     } else if (current_token->type == TOK_L_SQPAREN) { // KIND_LIST
-        parser_advance(parser); // "["
-        TypeInfo *elts_type = parse_type(parser);
-        parser_expect(parser, TOK_R_SQPAREN);
         TypeInfo *list_type = create_type_without_name(KIND_LIST);
-        list_type->list.elts_type = elts_type;
+        parser_advance(parser); // "["
+        list_type->list.elts_type = parse_type(parser);
+
+        if (current_token->type == TOK_COMMA) { // fixed size list
+            parser_advance(parser); // ","
+            Token *size_token = parser_expect(parser, TOK_INTEGER);
+            list_type->list.is_sized = true;
+            list_type->list.size = atoi(size_token->lexeme);
+        }
+        
+        parser_expect(parser, TOK_R_SQPAREN);
         return list_type;
     } else if (current_token->type == TOK_L_PAREN) { // KIND_FUNCTION
         todoln("Parse function type");
@@ -1324,11 +1340,6 @@ ASTNode *parse_block(Parser *parser)
 
     ASTNode *root = create_node_without_name(ASTNODE_BLOCK, current_token->loc);
 
-    if (!current_token) {
-        printf("ERROR: TODO %u\n", __LINE__);
-        exit(1);
-    }
-    
     if (current_token->type == TOK_R_CUPAREN) { // empty block, root->list is NULL, no need to create a new scope
         parser_advance(parser); // '}'
         return root;
@@ -1338,10 +1349,6 @@ ASTNode *parse_block(Parser *parser)
     if (root->list) {
         ASTNode *current_node = root->list;
         while (current_token->type != TOK_R_CUPAREN) {
-            if (current_token->type == TOK_EOF) {
-                printf("ERROR: TODO %u\n", __LINE__);
-                exit(1);
-            }
             current_node->next = parse_statement(parser);
             if (current_node->next) current_node = current_node->next;
         }
@@ -1395,8 +1402,8 @@ void parse_function(Parser *parser, ASTNode *node, Symbol *sym)
 
     parser_expect(parser, TOK_EQUALS);
 
-    // TODO: maybe if current != { we can parse a single statement, like in if but, at least here we got = to divide
-    node->decl.fn_block = parse_block(parser);
+    // TODO: maybe if current != { we can parse a single statement, like in if, but at least here we got = to divide
+    node->decl.fn.block = parse_block(parser);
 
     // TODO: manage parser->current_function
     parser->current_function = NULL;
@@ -1434,8 +1441,8 @@ void parse_variable(Parser *parser, ASTNode *node, Symbol *sym)
 
     if (current_token->type != TOK_SEMICOLON) {
         parser_expect(parser, TOK_EQUALS);
-        node->decl.var_expr = parse_expression(parser);
-        if (!node->decl.var_expr) {
+        node->decl.var.expr = parse_expression(parser);
+        if (!node->decl.var.expr) {
             loc_print(current_token->loc);
             error("Expected expression in variable declaration, but got ");
             token_print(current_token);
@@ -1526,7 +1533,7 @@ ASTNode *_parse_if_or_elif(Parser *parser, bool is_if)
         exit(1);
     }
 
-    ASTNode *cont_node;
+    ASTNode *cont_node = NULL;
     if (current_token->type == TOK_ELIF) {
         cont_node = parse_elif(parser);
     } else if (current_token->type == TOK_ELSE) {
@@ -1600,8 +1607,12 @@ ASTNode *parse_return(Parser *parser)
 
     if (current_token->type != TOK_SEMICOLON) {
         node->ret.expr = parse_expression(parser);
+        if (node->ret.expr) {
+            node->ret.fn->decl.fn.ret = node;
+        }
     }
     parser_expect(parser, TOK_SEMICOLON);
+
 
     return node;
 }
@@ -1778,13 +1789,18 @@ ASTNode *parse_statement(Parser *parser)
             return expr;
         };
 
+        case TOK_L_CUPAREN: {
+            return parse_block(parser);
+        }
+
         default:
+            // TODO report this error correctly
             loc_print(token->loc);
             error("Unexpected ");
             token_print(token);
             printf(" starting a statement\n");
             //loc_print(token->loc);
-            //noteln("A statement is a declaration, an assignment, a function call or a conditional"); // TODO
+            //noteln("A statement is a declaration, an assignment, a function call or a conditional");
             exit(1);
     }
 }
@@ -2008,7 +2024,7 @@ void generate_c_code(ASTNode *node, FILE *f)
             fprintf(f, " %s", node->sym->name);
             if (node->sym->var.initialized) {
                 fprintf(f, " = ");
-                generate_c_code(node->decl.var_expr, f);
+                generate_c_code(node->decl.var.expr, f);
             }
             fprintf(f, ";\n");
         } break;
@@ -2021,7 +2037,7 @@ void generate_c_code(ASTNode *node, FILE *f)
                 fprintf(f, " ");
             }
             push_new_scope(); {
-                generate_c_code(node->decl.fn_block, f);
+                generate_c_code(node->decl.fn.block, f);
             } pop_scope();
         } break;
         case SYM_TYPE: {
@@ -2154,7 +2170,7 @@ void generate_c_code(ASTNode *node, FILE *f)
     } break;
 
     default:
-        unreachableln("Ast node type %u in generate_c_code\n", node->type);
+        unreachableln("Ast node type %u in generate_c_code", node->type);
         exit(1);
     }
 }
@@ -2235,7 +2251,7 @@ TypeInfo *node_type(ASTNode *node)
     } break;
 
     default:
-        unreachableln("Ast node type %u in node_type\n", node->type);
+        unreachableln("Ast node type %u in node_type", node->type);
         exit(1);
     }
 
@@ -2406,7 +2422,7 @@ void type_check(ASTNode *node)
             bool inferred = false;
             if (node->sym->type->kind == KIND_NOT_INFERRED) {
                 free(node->sym->type);
-                node->sym->type = node_type(node->decl.var_expr);
+                node->sym->type = node_type(node->decl.var.expr);
                 inferred = true;
             }
             if (node->sym->type->kind == KIND_NOT_DECLARED) {
@@ -2417,21 +2433,10 @@ void type_check(ASTNode *node)
                     exit(1);
                 }
             }
-            if (!inferred && node->sym->var.initialized) match_type(node->decl.var_expr, node->sym->type);
+            if (!inferred && node->sym->var.initialized) match_type(node->decl.var.expr, node->sym->type);
             register_symbol(node->sym);
         } break;
         case SYM_FUNCTION: {
-            TypeInfo *ret_type = node->sym->type->fn.ret_type;
-            if (ret_type->kind == KIND_NOT_DECLARED) {
-                ret_type = get_type(node->sym->type->name);
-                if (ret_type->kind == KIND_NOT_DECLARED) {
-                    loc_print(node->loc);
-                    errorln("Undeclared return type \"%s\" for function \"%s\"", ret_type->name, node->name);
-                    exit(1);
-                }
-                node->sym->type->fn.ret_type = ret_type;
-            }
-            
             Scope fn_scope = {0};
             for (size_t i = 0; i < node->sym->fn.params.count; i++) {
                 Symbol *param = node->sym->fn.params.items[i];
@@ -2446,38 +2451,75 @@ void type_check(ASTNode *node)
                 }
                 da_push(&fn_scope.symbols, param);
             }
-            push_scope(fn_scope); {
-                type_check(node->decl.fn_block);
-            } pop_scope();
-        } break;
-        case SYM_TYPE: {
-            if (node->sym->type->kind == KIND_STRUCT) {
-                Symbol *other = get_symbol(node->sym->name);
-                if (other) {
+
+            TypeInfo *ret_type = node->sym->type->fn.ret_type;
+            if (ret_type->kind == KIND_NOT_DECLARED) {
+                ret_type = get_type(node->sym->type->name);
+                if (ret_type->kind == KIND_NOT_DECLARED) {
                     loc_print(node->loc);
-                    errorln("Redeclaration of name \"%s\"", node->sym->name);
-                    loc_print(other->loc);
-                    noteln("First declared here");
+                    errorln("Undeclared return type \"%s\" for function \"%s\"", ret_type->name, node->name);
                     exit(1);
                 }
+                node->sym->type->fn.ret_type = ret_type;
+            }
 
-                for (size_t i = 0; i < node->sym->type->strct.fields.count; i++) {
-                    StructField *field = &node->sym->type->strct.fields.items[i];
-                    if (field->type->kind == KIND_NOT_DECLARED) {
-                        field->type = get_type(field->type->name);
-                        if (field->type->kind == KIND_NOT_DECLARED) {
-                            loc_print(node->loc);
-                            errorln("Undeclared type \"%s\" for field \"%s\" (%zu) in struct \"%s\"",
-                                    field->type->name, field->name, i+1, node->sym->name);
-                            exit(1);
-                        }
-                    }
-                }
-                register_symbol(node->sym);
+            // TODO: it's not completely correct because I need to check every branch
+            TypeInfo *expected_ret = ret_type;
+            TypeInfo *actual_ret;
+            if (node->decl.fn.ret == NULL) {
+                actual_ret = primitive_type(PRIMITIVE_VOID);
             } else {
-                todoln("Type check %s declaration node", kind_as_string(node->sym->type->kind));
+                actual_ret = node_type(node->decl.fn.ret->ret.expr);
+            }
+            if (!are_types_equal(expected_ret, actual_ret)) {
+                loc_print(node->loc);
+                error("Mismatched return type in function \"%s\": wanted ", node->name);
+                type_print(expected_ret);
+
+                if (node->decl.fn.ret) {
+                    printf("\n");
+                    loc_print(node->decl.fn.ret->loc);
+                    error("bug got ");
+                } else {
+                    printf(" but got ");
+                }
+                type_print(actual_ret);
+                printf("\n");
                 exit(1);
             }
+
+            push_scope(fn_scope); {
+                type_check(node->decl.fn.block);
+            } pop_scope();
+                           } break;
+        case SYM_TYPE: {
+                           if (node->sym->type->kind == KIND_STRUCT) {
+                               Symbol *other = get_symbol(node->sym->name);
+                               if (other) {
+                                   loc_print(node->loc);
+                                   errorln("Redeclaration of name \"%s\"", node->sym->name);
+                                   loc_print(other->loc);
+                                   noteln("First declared here");
+                                   exit(1);
+                               }
+
+                               for (size_t i = 0; i < node->sym->type->strct.fields.count; i++) {
+                                   StructField *field = &node->sym->type->strct.fields.items[i];
+                                   if (field->type->kind == KIND_NOT_DECLARED) {
+                                       field->type = get_type(field->type->name);
+                                       if (field->type->kind == KIND_NOT_DECLARED) {
+                                           loc_print(node->loc);
+                                           errorln("Undeclared type \"%s\" for field \"%s\" (%zu) in struct \"%s\"",
+                                                   field->type->name, field->name, i+1, node->sym->name);
+                                           exit(1);
+                                       }
+                                   }
+                               }
+                               register_symbol(node->sym);
+                           } else {
+                               todoln("Type check %s declaration node", kind_as_string(node->sym->type->kind));
+                               exit(1);
+                           }
                        } break;
         default: unreachableln("SymbolKind in declaration node in type_check"); exit(1);
         }
@@ -2573,7 +2615,7 @@ void type_check(ASTNode *node)
 
     case ASTNODE_RETURN: {
         match_type(node->ret.expr, node->ret.fn->sym->type->fn.ret_type);
-        type_check(node->next);
+        type_check(node->next); // if node->next I can generate a warning of unreachable code
     } break;
 
     case ASTNODE_BINOP: {
@@ -2597,7 +2639,7 @@ void type_check(ASTNode *node)
         break;
 
     default:
-        unreachableln("Ast node type %u in type_check\n", node->type);
+        unreachableln("Ast node type %u in type_check", node->type);
         exit(1);
     }
 }
@@ -2628,12 +2670,18 @@ int main(int argc, char **argv)
     }
 
     char *source_path = shift_arg(&argc, &argv);
-    // TODO: check source_path file extension
+    const char *dot = strrchr(source_path, '.');
+    if (!dot || streq(source_path, dot) || !streq(KJUDE_FILE_EXTENSION, dot+1)) {
+        errorln("Unrecognized file extension \"%s\", should have "KJUDE_FILE_EXTENSION, dot);
+        exit(1);
+    }
 
     bool flag_generate_only = false;
+    bool flag_generate_and_finalize = false;
     if (argc >= 1) {
         char *flag = shift_arg(&argc, &argv);
-        if (streq(flag, "-g")) flag_generate_only = true;
+             if (streq(flag, "-g")) flag_generate_only = true;
+        else if (streq(flag, "-G")) flag_generate_and_finalize = true;
     }
 
     initialize();
@@ -2644,15 +2692,6 @@ int main(int argc, char **argv)
 
     Lexer lexer = lexer_new(source_path);
     Tokens tokens = lexer_lex(&lexer);
-#if DEBUG
-    printf("Tokens (%zu):\n", tokens.count);
-    da_foreach (tokens, t) {
-        loc_print(t->loc);
-        token_print(t);
-        printf("\n");
-    }
-    printf("\n");
-#endif
 
     timer_finish(&lexing_timer, "Lexing");
     /// End Lexing
@@ -2703,7 +2742,8 @@ int main(int argc, char **argv)
     timer_start(&finalization_timer);
 
     compile_c();
-    //remove(c_filename);
+    if (!flag_generate_and_finalize)
+        remove(c_filename);
 
     timer_finish(&finalization_timer, "Finalization");
     /// End Finalization
