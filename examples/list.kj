@@ -1,6 +1,6 @@
 foo : () = {
     list1 : [int, 3] = [1, 2, 3];
-    list2 : [string] = [];
+    list1 = [4, 5, 6];
 }
 
 main : () = {

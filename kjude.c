@@ -2510,20 +2510,6 @@ void type_check(ASTNode *node)
             register_symbol(node->decl.sym);
 
             if (!inferred && node->decl.var.initialization) {
-                if (node->decl.sym->type->kind == KIND_LIST) {
-                    TypeInfo *list_type = node->decl.sym->type;
-                    ASTNode *list_node = node->decl.var.initialization->assign.rhs;
-                    if (list_type->list.is_sized && list_type->list.size != list_node->list.size) {
-                        loc_print(node->loc);
-                        // TODO: create a type from the list_node and use are_types_equal_with_errors
-                        errorln("Variable '%s' was expecting a list of size %zu, but got size %zu", node->decl.sym->name, list_type->list.size, list_node->list.size);
-                        exit(1);
-                    }
-                    if (list_node->list.elts_type->kind == KIND_NOT_INFERRED) {
-                        list_node->list.elts_type = list_type->list.elts_type;
-                    }
-                    type_check(list_node);
-                }
                 type_check(node->decl.var.initialization);
             }
         } break;
@@ -2619,6 +2605,25 @@ void type_check(ASTNode *node)
     } break;
 
     case ASTNODE_ASSIGNMENT: {
+        Symbol *sym = get_symbol(node->assign.lhs->name);
+        assert(sym);
+
+        if (sym->type->kind == KIND_LIST) {
+            TypeInfo *list_type = sym->type;
+            ASTNode *list_node = node->assign.rhs;
+            if (list_type->list.is_sized && list_type->list.size != list_node->list.size) {
+                loc_print(node->loc);
+                // TODO: create a type from the list_node and use are_types_equal_with_errors
+                errorln("Variable '%s' was expecting a list of size %zu, but got size %zu", sym->name,
+                        list_type->list.size, list_node->list.size);
+                exit(1);
+            }
+            if (list_node->list.elts_type->kind == KIND_NOT_INFERRED) {
+                list_node->list.elts_type = list_type->list.elts_type;
+            }
+            type_check(list_node); // populate list.elts_type
+        }
+
         type_check(node->assign.lhs);
         TypeInfo *type = node_type(node->assign.lhs);
         match_type(node->assign.rhs, type);
