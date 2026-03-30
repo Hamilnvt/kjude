@@ -1,0 +1,8 @@
+foo : () = {
+    list1 : [int, 3] = [1, 2, 3];
+    list2 : [string] = [];
+}
+
+main : () = {
+    l2: [int, 2];
+}
