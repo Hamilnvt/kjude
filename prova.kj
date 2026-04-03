@@ -1,0 +1,20 @@
+S : struct = {
+    x: int;
+
+    //init : () -> Self = { }
+
+    foo : (self) = {
+        self.x = 10;
+    }
+    bar : () = { }
+}
+
+main : () -> int = {
+
+    s: S;
+    s.foo();
+    s.bar();
+    S.bar();
+
+    return 0;
+}

@@ -1,13 +1,9 @@
-//foo : () -> int = { x := 5; return; } // TODO: test it
+main : () -> int = {
+    local_function : () = { }
 
-main : () -> int = { x := 5; return x; }
-
-//main : () -> int = {
-//    //local_function : () = { }
-//
-//    x := five();
-//    return x;
-//}
+    x := five();
+    return x;
+}
 
 five : () -> int = {
     if   true: return 5;
@@ -15,8 +11,3 @@ five : () -> int = {
     else       return 5;
 }
 
-//five : () => 5
-
-//filter : (list: List, cond: (list.elts_type) -> bool) = { ... }
-
-//filter(list, (elt) => elt == 5)

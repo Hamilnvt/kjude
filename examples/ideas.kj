@@ -1,18 +1,18 @@
-//print: (s: S) = { // cosi' non funziona
-//    
-//}
-
-S : struct = {
+S1 : struct = {
     x: int;
 
-    //print: (s: S) = { // sarebbe incredibile
+    //print: (s: S1) = { // sarebbe incredibile
     //    println("S = \{\n");
     //    println("x = {s.x}");
     //    println("\}\n");
     //}
 }
 
-//print: (s: S) = {
+print: (s1: S1) = { // cosi' non funziona
+    
+}
+
+//print: (s1: S1) = {
 //    
 //}
 
@@ -21,10 +21,12 @@ daje: () -> string = {
 }
 
 main : () -> int = {
+    s1: S1;
+
     S2: struct = {
         x: int;
     }
-    s: S2;
+    s2: S2;
 
     {
         S3: struct = {
@@ -33,10 +35,12 @@ main : () -> int = {
         s3: S3;
     }
 
-    //if true {}
-    //s: S;
-    //s.x = 5;
     //print(s);
+    //s.print();
 
     return 0;
 }
+
+//five : () => 5
+//filter : (list: List, cond: (list.elts_type) -> bool) = { ... }
+//filter(list, (elt) => elt == 5)
