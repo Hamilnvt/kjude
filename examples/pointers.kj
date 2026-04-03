@@ -1,0 +1,18 @@
+main : () -> int = {
+    p_int: ^int;
+
+    x: int;
+    p = ^x;
+    p .= 3;
+
+    p.alloc(int); // n: uint = 1 (default)
+    p .= 5;
+    p.free();
+    p = ^x;
+
+    S : struct = {
+        x: int;
+    }
+    p_S := Ptr.alloc(S);
+    p_S.x = 5; // autodereferencing
+}

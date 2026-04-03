@@ -43,6 +43,9 @@
 //   > or there are some functions that can be called on types
 //     - `add : (list: List) -> { list.data ... }`
 //        > so yeah, they are a struct { data, size, capacity } (capacity if the list is dynamic)
+// - Introduce new kinds:
+//   > pointer
+//   > type
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -708,24 +711,28 @@ typedef enum
     KIND_NOT_DECLARED = 0,
     KIND_NOT_INFERRED,
 
+    KIND_TYPE,
     KIND_PRIMITIVE,
     KIND_LIST,
     KIND_FUNCTION,
     KIND_STRUCT,
+    KIND_POINTER,
 
     __kinds_count
 } Kind;
 
-static_assert(__kinds_count == 6, "Cover all kinds in kind_as_string");
+static_assert(__kinds_count == 8, "Cover all kinds in kind_as_string");
 char *kind_as_string(Kind kind)
 {
     switch (kind) {
     case KIND_NOT_DECLARED: return "Not Declared";
     case KIND_NOT_INFERRED: return "Not Inferred";
+    case KIND_TYPE:         return "Type";
     case KIND_PRIMITIVE:    return "Primitive";
     case KIND_LIST:         return "List";
     case KIND_FUNCTION:     return "Function";
     case KIND_STRUCT:       return "Struct";
+    case KIND_POINTER:      return "Pointer";
     default:
         unreachableln("Kind %u in kind_as_string", kind);
         exit(1);
@@ -788,31 +795,35 @@ typedef struct Symbols
     size_t capacity;
 } Symbols;
 
-static_assert(__kinds_count == 6, "Cover all kinds in TypeInfo struct");
+static_assert(__kinds_count == 8, "Cover all kinds in TypeInfo struct");
 typedef struct TypeInfo
 {
     Kind kind;
     char name[64];
     union {
-        PrimitiveType primitive;
+        TypeInfo *type; // TYPE
+        PrimitiveType primitive; // PRIMITIVE
         struct {
             TypeInfos params;
             struct TypeInfo *ret_type;
             bool is_method; // struct function
             bool is_static; // struct function without self
-        } fn;
+        } fn; // FUNCTION
         struct {
             TypeInfo *elts_type;
             bool is_sized;
             size_t size;
-        } list;
+        } list; // LIST
         struct {
             Symbols members;
-        } strct;
+        } strct; // STRUCT
+        TypeInfo *pointed_type; // POINTER
     };
 } TypeInfo;
 
-static_assert(__kinds_count == 6, "Cover all kinds in generate_type");
+void type_print(TypeInfo *type);
+
+static_assert(__kinds_count == 8, "Cover all kinds in generate_type");
 void generate_type(TypeInfo *type, char *name, FILE *f)
 {
     switch (type->kind) {
@@ -820,6 +831,13 @@ void generate_type(TypeInfo *type, char *name, FILE *f)
     case KIND_NOT_INFERRED:
         unreachableln("Type checking should have resolved KIND_NOT_DECLARED and KIND_NOT_INFERRED");
         exit(1);
+
+    case KIND_TYPE:
+        todo("Generate kind %s -> ", kind_as_string(KIND_TYPE));
+        type_print(type->type);
+        printf("\n");
+        exit(1);
+        break;
 
     case KIND_PRIMITIVE:
         fprintf(f, "%s", primitive_type_to_c(type->primitive));
@@ -846,13 +864,18 @@ void generate_type(TypeInfo *type, char *name, FILE *f)
         break;
     } break;
 
+    case KIND_POINTER: {
+        generate_type(type->pointed_type, name, f);
+        fprintf(f, "*");
+        break;
+    } break;
+
     default:
         unreachableln("Kind %u in generate_type", type->kind);
         exit(1);
     }
 }
 
-void type_print(TypeInfo *type);
 bool _are_types_equal(TypeInfo *a, TypeInfo *b, bool report_errors, Location *loc_a, Location *loc_b)
 {
     // TODO: report locations (maybe pass symbol for name?)
@@ -879,12 +902,39 @@ bool _are_types_equal(TypeInfo *a, TypeInfo *b, bool report_errors, Location *lo
         return false;
     }
 
-    static_assert(__kinds_count == 6, "Cover all kinds in _are_types_equal");
+    static_assert(__kinds_count == 8, "Cover all kinds in _are_types_equal");
     switch (a->kind) {
     case KIND_NOT_DECLARED: return true;
     case KIND_NOT_INFERRED: return true;
+    case KIND_TYPE:         return _are_types_equal(a->type, b->type, report_errors, loc_a, loc_b);
     case KIND_PRIMITIVE:    return a->primitive == b->primitive;
-    case KIND_LIST:         return _are_types_equal(a->list.elts_type, b->list.elts_type, report_errors, loc_a, loc_b);
+    case KIND_LIST: {
+        if (!_are_types_equal(a->list.elts_type, b->list.elts_type, report_errors, loc_a, loc_b)) {
+            if (report_errors) {
+                error("Lists have different elements types '");
+                type_print(a->list.elts_type);
+                printf("' and '");
+                type_print(b->list.elts_type);
+                printf("'\n");
+            }
+            return false;
+        }
+        if (a->list.is_sized && b->list.is_sized) {
+            if (a->list.size != b->list.size) {
+                if (report_errors) {
+                    errorln("Sized lists have different size: %zu and %zu", a->list.size, b->list.size);
+                }
+                return false;
+            }
+        } else if (!(!a->list.is_sized && !b->list.is_sized)) {
+            if (report_errors) {
+                errorln("Lists sizedeness mismatch: %s and %s",
+                        a->list.is_sized ? "sized" : "dynamic",
+                        b->list.is_sized ? "sized" : "dynamic");
+            }
+            return false;
+        }
+    } break;
     case KIND_FUNCTION: {
         size_t count_a = a->fn.params.count;
         size_t count_b = b->fn.params.count;
@@ -933,6 +983,8 @@ bool _are_types_equal(TypeInfo *a, TypeInfo *b, bool report_errors, Location *lo
         //exit(1);
     } break;
 
+    case KIND_POINTER: return _are_types_equal(a->pointed_type, b->pointed_type, report_errors, loc_a, loc_b);
+
     default:
         unreachableln("Kind %u in _are_types_equal", a->kind);
         exit(1);
@@ -947,13 +999,19 @@ static inline bool are_types_equal(TypeInfo *a, TypeInfo *b) { return _are_types
 
 static inline TypeInfo *primitive_type(PrimitiveType type);
 
-static_assert(__kinds_count == 6, "Cover all kinds in type_print");
+static_assert(__kinds_count == 8, "Cover all kinds in type_print");
 void type_print(TypeInfo *type)
 {
     switch (type->kind) {
     case KIND_NOT_DECLARED:
     case KIND_NOT_INFERRED:
         printf("%s", kind_as_string(type->kind));
+        break;
+
+    case KIND_TYPE:
+        printf("Type(");
+        type_print(type->type);
+        printf(")");
         break;
 
     case KIND_PRIMITIVE:
@@ -980,6 +1038,11 @@ void type_print(TypeInfo *type)
 
     case KIND_STRUCT:
         printf("%s", type->name);
+        break;
+
+    case KIND_POINTER:
+        printf("*");
+        type_print(type->pointed_type);
         break;
 
     default:
@@ -1347,7 +1410,7 @@ TypeInfo *get_type(const char *name)
     return create_type(KIND_NOT_DECLARED, name);
 }
 
-static_assert(__kinds_count == 6, "Cover all kinds in parse_type");
+static_assert(__kinds_count == 8, "Cover all kinds in parse_type");
 TypeInfo *parse_type(Parser *parser)
 {
     if (current_token->type == TOK_IDENT) { // KIND_PRIMITIVE, KIND_STRUCT
@@ -1371,6 +1434,11 @@ TypeInfo *parse_type(Parser *parser)
     } else if (current_token->type == TOK_L_PAREN) { // KIND_FUNCTION
         todoln("Parse function type");
         exit(1);
+    } else if (current_token->type == TOK_STAR) { // KIND_POINTER
+        TypeInfo *pointer_type = create_type_without_name(KIND_POINTER);
+        parser_advance(parser); // "*"
+        pointer_type->pointed_type = parse_type(parser);
+        return pointer_type;
     } else {
         loc_print(current_token->loc);
         error("Expecting a type, but got ");

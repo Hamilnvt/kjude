@@ -18,6 +18,7 @@ print: (s1: S1) = { // cosi' non funziona
 
 daje: () -> string = {
     if false: return "daje";
+    else: "palle"
 }
 
 main : () -> int = {
