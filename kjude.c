@@ -46,6 +46,7 @@
 // - Introduce new kinds:
 //   > pointer
 //   > type
+// - Interesting conversation about future work: https://gemini.google.com/share/30240fe1ff3d
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -258,6 +259,7 @@ bool read_entire_file(const char *path, String *source)
 #define KEYWORD_FOR    "for"
 #define KEYWORD_RETURN "return"
 #define KEYWORD_STRUCT "struct"
+#define KEYWORD_ANY    "Any"
 #define KEYWORD_TRUE   "true"
 #define KEYWORD_FALSE  "false"
 
@@ -274,7 +276,9 @@ typedef enum
     TOK_STRUCT,
     TOK_TRUE,
     TOK_FALSE,
-    TOK_INTEGER,
+    //TOK_EXTERN, // TODO
+    TOK_ANY,
+    TOK_NUMBER,
     TOK_STRING,
     TOK_L_PAREN,
     TOK_R_PAREN,
@@ -284,9 +288,12 @@ typedef enum
     TOK_R_CUPAREN,
     TOK_COMMA,
     TOK_DOT,
+    TOK_HAT,
     TOK_COLON,
     TOK_SEMICOLON,
     TOK_EQUALS,
+    TOK_LESS_THAN,
+    TOK_GREATER_THAN,
     TOK_DOUBLE_EQUALS,
     TOK_ARROW,
     TOK_PLUS,
@@ -310,7 +317,7 @@ typedef struct
 
 char *token_type_as_string(TokenType type)
 {
-    static_assert(__tok_types_count == 28, "Cover all token types in token_type_as_string");
+    static_assert(__tok_types_count == 32, "Cover all token types in token_type_as_string");
     switch (type)
     {
         case TOK_EOF:           return "EOF";
@@ -322,9 +329,10 @@ char *token_type_as_string(TokenType type)
         case TOK_FOR:           return KEYWORD_FOR;
         case TOK_RETURN:        return KEYWORD_RETURN;
         case TOK_STRUCT:        return KEYWORD_STRUCT;
+        case TOK_ANY:           return KEYWORD_ANY;
         case TOK_TRUE:          return KEYWORD_TRUE;
         case TOK_FALSE:         return KEYWORD_FALSE;
-        case TOK_INTEGER:       return "Integer";
+        case TOK_NUMBER:        return "Number";
         case TOK_STRING:        return "String";
         case TOK_L_PAREN:       return "(";
         case TOK_R_PAREN:       return ")";
@@ -334,10 +342,13 @@ char *token_type_as_string(TokenType type)
         case TOK_R_CUPAREN:     return "}";
         case TOK_COMMA:         return ",";
         case TOK_DOT:           return ".";
+        case TOK_HAT:           return "^";
         case TOK_COLON:         return ":";
         case TOK_SEMICOLON:     return ";";
-        case TOK_DOUBLE_EQUALS: return "==";
         case TOK_EQUALS:        return "=";
+        case TOK_LESS_THAN:     return "<";
+        case TOK_GREATER_THAN:  return ">";
+        case TOK_DOUBLE_EQUALS: return "==";
         case TOK_ARROW:         return "->";
         case TOK_PLUS:          return "+";
         case TOK_STAR:          return "*";
@@ -347,12 +358,12 @@ char *token_type_as_string(TokenType type)
     }
 }
 
-static_assert(__tok_types_count == 28, "Cover all token types in token_print");
+static_assert(__tok_types_count == 32, "Cover all token types in token_print");
 void token_print(const Token *tok)
 {
     switch (tok->type) {
         case TOK_IDENT:
-        case TOK_INTEGER:
+        case TOK_NUMBER:
         case TOK_STRING:
             printf("<%s, '%s'>", token_type_as_string(tok->type), tok->lexeme);
             break;
@@ -364,6 +375,7 @@ void token_print(const Token *tok)
         case TOK_FOR:
         case TOK_RETURN:
         case TOK_STRUCT:
+        case TOK_ANY:
         case TOK_TRUE:
         case TOK_FALSE:
         case TOK_EOF:
@@ -378,9 +390,12 @@ void token_print(const Token *tok)
         case TOK_R_CUPAREN:
         case TOK_COMMA:
         case TOK_DOT:
+        case TOK_HAT:
         case TOK_COLON:
         case TOK_SEMICOLON:
         case TOK_EQUALS:
+        case TOK_LESS_THAN:
+        case TOK_GREATER_THAN:
         case TOK_DOUBLE_EQUALS:
         case TOK_ARROW:
         case TOK_PLUS:
@@ -516,7 +531,7 @@ static inline bool can_start_number(char c) { return isdigit(c); }
 static inline bool can_continue_number(char c) { return isdigit(c); }
 
 #define TOK_INVALID ((TokenType)-1)
-static_assert(__tok_types_count == 28, "Cover all token types in lexer_get_next_token");
+static_assert(__tok_types_count == 32, "Cover all token types in lexer_get_next_token");
 Token lexer_get_next_token(Lexer *lexer)
 {
     lexer_eat_spaces(lexer);
@@ -545,6 +560,7 @@ Token lexer_get_next_token(Lexer *lexer)
         else if (streq(token.lexeme, KEYWORD_FOR))    token.type = TOK_FOR;
         else if (streq(token.lexeme, KEYWORD_RETURN)) token.type = TOK_RETURN;
         else if (streq(token.lexeme, KEYWORD_STRUCT)) token.type = TOK_STRUCT;
+        else if (streq(token.lexeme, KEYWORD_ANY))    token.type = TOK_ANY;
         else if (streq(token.lexeme, KEYWORD_TRUE))   token.type = TOK_TRUE;
         else if (streq(token.lexeme, KEYWORD_FALSE))  token.type = TOK_FALSE;
         else                                          token.type = TOK_IDENT;
@@ -557,7 +573,7 @@ Token lexer_get_next_token(Lexer *lexer)
             c = current_char;
         } while (can_continue_number(c));
         token.lexeme[i] = '\0';
-        token.type = TOK_INTEGER;
+        token.type = TOK_NUMBER;
     } else {
         int i = 0;
         token.lexeme[i++] = c;
@@ -567,8 +583,11 @@ Token lexer_get_next_token(Lexer *lexer)
         switch (c) {
             case ',': token.type = TOK_COMMA;     break;
             case '.': token.type = TOK_DOT;       break;
+            case '^': token.type = TOK_HAT;       break;
             case ':': token.type = TOK_COLON;     break;
             case ';': token.type = TOK_SEMICOLON; break;
+            case '<': token.type = TOK_LESS_THAN; break;
+            case '>': token.type = TOK_GREATER_THAN; break;
             case '=': {
                 if (current_char == '=') {
                     token.type = TOK_DOUBLE_EQUALS;
@@ -660,30 +679,38 @@ typedef enum
     ASTNODE_CALL,
     ASTNODE_CALL_STATEMENT,
     ASTNODE_MEMBER_ACCESS,
+    ASTNODE_UNARY,
     ASTNODE_BINOP,
 
     ASTNODE_IDENT,
     ASTNODE_NUMBER,
     ASTNODE_STRING,
     ASTNODE_BOOL,
-    ASTNODE_LIST_LITERAL,
+    ASTNODE_ARRAY_LITERAL,
 
     __astnode_types_count
 } ASTNodeType;
 
 typedef enum
 {
+    // Unary
+    OP_ADDRESS_OF,
+    OP_DEREFERENCE,
+
+    // Binary
     OP_PLUS,
     OP_STAR,
-
     OP_DOUBLE_EQUALS,
+
     __op_types_count,
 } Operator;
 
-static_assert(__op_types_count == 3, "Cover all operators in operator_from_token_type");
+static_assert(__op_types_count == 5, "Cover all operators in operator_from_token_type");
 Operator operator_from_token_type(TokenType type)
 {
     switch (type) {
+    case TOK_HAT:           return OP_ADDRESS_OF;
+    case TOK_DOT:           return OP_DEREFERENCE;
     case TOK_PLUS:          return OP_PLUS;
     case TOK_STAR:          return OP_STAR;
     case TOK_DOUBLE_EQUALS: return OP_DOUBLE_EQUALS;
@@ -693,10 +720,13 @@ Operator operator_from_token_type(TokenType type)
     }
 }
 
-static_assert(__op_types_count == 3, "Cover all operators in operator_as_string");
+static_assert(__op_types_count == 5, "Cover all operators in operator_as_string");
 char *operator_as_string(Operator op)
 {
     switch (op) {
+    case OP_ADDRESS_OF:    return "^";
+    case OP_DEREFERENCE:   return ".";
+
     case OP_PLUS:          return "+";
     case OP_STAR:          return "*";
     case OP_DOUBLE_EQUALS: return "==";
@@ -712,27 +742,29 @@ typedef enum
     KIND_NOT_INFERRED,
 
     KIND_TYPE,
+    KIND_ANY,
     KIND_PRIMITIVE,
-    KIND_LIST,
-    KIND_FUNCTION,
     KIND_STRUCT,
+    KIND_FUNCTION,
     KIND_POINTER,
+    KIND_ARRAY,
 
     __kinds_count
 } Kind;
 
-static_assert(__kinds_count == 8, "Cover all kinds in kind_as_string");
+static_assert(__kinds_count == 9, "Cover all kinds in kind_as_string");
 char *kind_as_string(Kind kind)
 {
     switch (kind) {
     case KIND_NOT_DECLARED: return "Not Declared";
     case KIND_NOT_INFERRED: return "Not Inferred";
     case KIND_TYPE:         return "Type";
+    case KIND_ANY:          return "Any";
     case KIND_PRIMITIVE:    return "Primitive";
-    case KIND_LIST:         return "List";
-    case KIND_FUNCTION:     return "Function";
     case KIND_STRUCT:       return "Struct";
+    case KIND_FUNCTION:     return "Function";
     case KIND_POINTER:      return "Pointer";
+    case KIND_ARRAY:        return "Array";
     default:
         unreachableln("Kind %u in kind_as_string", kind);
         exit(1);
@@ -744,7 +776,7 @@ typedef enum
     PRIMITIVE_UNKNOWN = -1,
 
     PRIMITIVE_VOID = 0,
-    PRIMITIVE_I32,
+    PRIMITIVE_U32,
     PRIMITIVE_STRING,
     PRIMITIVE_BOOL,
 
@@ -756,7 +788,7 @@ char *primitive_type_as_string(PrimitiveType type)
 {
     switch (type) {
     case PRIMITIVE_VOID:   return "void";
-    case PRIMITIVE_I32:    return "int";
+    case PRIMITIVE_U32:    return "uint";
     case PRIMITIVE_STRING: return "string";
     case PRIMITIVE_BOOL:   return "bool";
     default:
@@ -770,7 +802,7 @@ char *primitive_type_to_c(PrimitiveType type)
 {
     switch (type) {
     case PRIMITIVE_VOID:   return "void";
-    case PRIMITIVE_I32:    return "int32_t";
+    case PRIMITIVE_U32:    return "uint32_t";
     case PRIMITIVE_STRING: return "char *";
     case PRIMITIVE_BOOL:   return "int";
     default:
@@ -795,35 +827,39 @@ typedef struct Symbols
     size_t capacity;
 } Symbols;
 
-static_assert(__kinds_count == 8, "Cover all kinds in TypeInfo struct");
+static_assert(__kinds_count == 9, "Cover all kinds in TypeInfo struct");
 typedef struct TypeInfo
 {
     Kind kind;
     char name[64];
     union {
-        TypeInfo *type; // TYPE
+        TypeInfo *type_value; // TYPE
         PrimitiveType primitive; // PRIMITIVE
         struct {
             TypeInfos params;
             struct TypeInfo *ret_type;
+            bool is_external; // TODO
             bool is_method; // struct function
             bool is_static; // struct function without self
         } fn; // FUNCTION
         struct {
-            TypeInfo *elts_type;
-            bool is_sized;
+            TypeInfo *of;
             size_t size;
-        } list; // LIST
+        } array; // ARRAY
         struct {
             Symbols members;
+            bool is_generic;
+            TypeInfos params;
         } strct; // STRUCT
-        TypeInfo *pointed_type; // POINTER
+        struct {
+            TypeInfo *to;
+        } ptr; // POINTER
     };
 } TypeInfo;
 
 void type_print(TypeInfo *type);
 
-static_assert(__kinds_count == 8, "Cover all kinds in generate_type");
+static_assert(__kinds_count == 9, "Cover all kinds in generate_type");
 void generate_type(TypeInfo *type, char *name, FILE *f)
 {
     switch (type->kind) {
@@ -834,8 +870,13 @@ void generate_type(TypeInfo *type, char *name, FILE *f)
 
     case KIND_TYPE:
         todo("Generate kind %s -> ", kind_as_string(KIND_TYPE));
-        type_print(type->type);
+        type_print(type->type_value);
         printf("\n");
+        exit(1);
+        break;
+
+    case KIND_ANY:
+        todoln("Generate kind %s -> ", kind_as_string(KIND_ANY));
         exit(1);
         break;
 
@@ -843,16 +884,11 @@ void generate_type(TypeInfo *type, char *name, FILE *f)
         fprintf(f, "%s", primitive_type_to_c(type->primitive));
         break;
 
-    case KIND_LIST: {
-        if (type->list.is_sized) {
-            generate_type(type->list.elts_type, NULL, f);
+    case KIND_ARRAY: {
+            generate_type(type->array.of, NULL, f);
             if (name) fprintf(f, " %s", name);
-            fprintf(f, "[%zu]", type->list.size);
-        } else {
-            todoln("Dynamic lists are not yet supported");
-            exit(1);
-        }
-                    } break;
+            fprintf(f, "[%zu]", type->array.size);
+    } break;
 
     case KIND_FUNCTION: {
         todoln("Write function to c");
@@ -865,7 +901,7 @@ void generate_type(TypeInfo *type, char *name, FILE *f)
     } break;
 
     case KIND_POINTER: {
-        generate_type(type->pointed_type, name, f);
+        generate_type(type->ptr.to, name, f);
         fprintf(f, "*");
         break;
     } break;
@@ -902,35 +938,32 @@ bool _are_types_equal(TypeInfo *a, TypeInfo *b, bool report_errors, Location *lo
         return false;
     }
 
-    static_assert(__kinds_count == 8, "Cover all kinds in _are_types_equal");
+    static_assert(__kinds_count == 9, "Cover all kinds in _are_types_equal");
     switch (a->kind) {
-    case KIND_NOT_DECLARED: return true;
-    case KIND_NOT_INFERRED: return true;
-    case KIND_TYPE:         return _are_types_equal(a->type, b->type, report_errors, loc_a, loc_b);
-    case KIND_PRIMITIVE:    return a->primitive == b->primitive;
-    case KIND_LIST: {
-        if (!_are_types_equal(a->list.elts_type, b->list.elts_type, report_errors, loc_a, loc_b)) {
+
+    case KIND_NOT_DECLARED:
+    case KIND_NOT_INFERRED:
+    case KIND_ANY:
+        return true;
+
+    case KIND_TYPE: return _are_types_equal(a->type_value, b->type_value, report_errors, loc_a, loc_b);
+
+    case KIND_PRIMITIVE: return a->primitive == b->primitive;
+
+    case KIND_ARRAY: {
+        if (!_are_types_equal(a->array.of, b->array.of, report_errors, loc_a, loc_b)) {
             if (report_errors) {
-                error("Lists have different elements types '");
-                type_print(a->list.elts_type);
+                error("Arrays have different elements types '");
+                type_print(a->array.of);
                 printf("' and '");
-                type_print(b->list.elts_type);
+                type_print(b->array.of);
                 printf("'\n");
             }
             return false;
         }
-        if (a->list.is_sized && b->list.is_sized) {
-            if (a->list.size != b->list.size) {
-                if (report_errors) {
-                    errorln("Sized lists have different size: %zu and %zu", a->list.size, b->list.size);
-                }
-                return false;
-            }
-        } else if (!(!a->list.is_sized && !b->list.is_sized)) {
+        if (a->array.size != b->array.size) {
             if (report_errors) {
-                errorln("Lists sizedeness mismatch: %s and %s",
-                        a->list.is_sized ? "sized" : "dynamic",
-                        b->list.is_sized ? "sized" : "dynamic");
+                errorln("Arrays have different size: %zu and %zu", a->array.size, b->array.size);
             }
             return false;
         }
@@ -983,7 +1016,7 @@ bool _are_types_equal(TypeInfo *a, TypeInfo *b, bool report_errors, Location *lo
         //exit(1);
     } break;
 
-    case KIND_POINTER: return _are_types_equal(a->pointed_type, b->pointed_type, report_errors, loc_a, loc_b);
+    case KIND_POINTER: return _are_types_equal(a->ptr.to, b->ptr.to, report_errors, loc_a, loc_b);
 
     default:
         unreachableln("Kind %u in _are_types_equal", a->kind);
@@ -999,31 +1032,19 @@ static inline bool are_types_equal(TypeInfo *a, TypeInfo *b) { return _are_types
 
 static inline TypeInfo *primitive_type(PrimitiveType type);
 
-static_assert(__kinds_count == 8, "Cover all kinds in type_print");
+static_assert(__kinds_count == 9, "Cover all kinds in type_print");
 void type_print(TypeInfo *type)
 {
     switch (type->kind) {
     case KIND_NOT_DECLARED:
     case KIND_NOT_INFERRED:
+    case KIND_ANY:
         printf("%s", kind_as_string(type->kind));
         break;
 
-    case KIND_TYPE:
-        printf("Type(");
-        type_print(type->type);
-        printf(")");
-        break;
+    case KIND_TYPE: type_print(type->type_value); break;
 
-    case KIND_PRIMITIVE:
-        printf("%s", primitive_type_as_string(type->primitive));
-        break;
-
-    case KIND_LIST:
-        printf("[");
-        type_print(type->list.elts_type);
-        if (type->list.is_sized) printf(", %zu", type->list.size);
-        printf("]");
-        break;
+    case KIND_PRIMITIVE: printf("%s", primitive_type_as_string(type->primitive)); break;
 
     case KIND_FUNCTION: {
         printf("(");
@@ -1040,9 +1061,16 @@ void type_print(TypeInfo *type)
         printf("%s", type->name);
         break;
 
+    case KIND_ARRAY:
+        printf("[");
+        type_print(type->array.of);
+        printf(", %zu", type->array.size);
+        printf("]");
+        break;
+
     case KIND_POINTER:
-        printf("*");
-        type_print(type->pointed_type);
+        printf("^");
+        type_print(type->ptr.to);
         break;
 
     default:
@@ -1105,6 +1133,8 @@ struct Symbol
         } fn;
         struct { // SYM_TYPE - struct
             Symbols members;
+            bool is_generic;
+            Symbols params;
         } strct;
     };
 };
@@ -1147,16 +1177,30 @@ static inline Scope pop_scope(void) { return da_pop(&scopes); }
 static inline Scope *get_global_scope(void) { return &scopes.items[0]; }
 static inline bool in_global_scope(void) { return scopes.count == 1; }
 
+void dump_symbols(void)
+{
+    debugln("Dumping symbols:");
+    for (size_t scope_i = 0; scope_i < scopes.count; scope_i++) {
+            debugln("  %zu:", scope_i);
+        for (size_t sym_i = 0; sym_i < scopes.items[scope_i].symbols.count; sym_i++) {
+            debugln("    - %s", scopes.items[scope_i].symbols.items[sym_i]->name);
+        }
+    }
+}
+
+static TypeInfo _type_any;
+static inline TypeInfo *any_type(void) { return &_type_any; }
+
 static_assert(__primitive_types_count == 5-1, "Declare all primitive types and retrieve them in primitive_type");
 static TypeInfo _type_primitive_void;
-static TypeInfo _type_primitive_i32;
+static TypeInfo _type_primitive_u32;
 static TypeInfo _type_primitive_string;
 static TypeInfo _type_primitive_bool;
 static inline TypeInfo *primitive_type(PrimitiveType type)
 {
     switch (type) {
     case PRIMITIVE_VOID:   return &_type_primitive_void;
-    case PRIMITIVE_I32:    return &_type_primitive_i32;
+    case PRIMITIVE_U32:    return &_type_primitive_u32;
     case PRIMITIVE_STRING: return &_type_primitive_string;
     case PRIMITIVE_BOOL:   return &_type_primitive_bool;
     default:
@@ -1206,9 +1250,10 @@ typedef struct ASTNode
     Location loc;
     char name[64];
 
+    bool type_checked; // TODO: is this useful ? 
     TypeInfo *resolved_type;
 
-    static_assert(__astnode_types_count == 19, "Cover all ast node types ASTNode struct");
+    static_assert(__astnode_types_count == 20, "Cover all ast node types ASTNode struct");
     union {
         Symbol *ident; // IDENT
         PrimitiveValue value; // NUMBER, STRING, BOOL
@@ -1218,6 +1263,10 @@ typedef struct ASTNode
             ASTNode *right;
         } binary; // BINOP
         struct {
+            Operator operator;
+            ASTNode *operand;
+        } unary; // UNARY
+        struct {
             ASTNode *expr;
             ASTNode *block;
             ASTNode *list; // elif list or else (for IF and ELIS)
@@ -1225,9 +1274,9 @@ typedef struct ASTNode
         ASTNode *statements; // BLOCK
         struct {
             size_t size;
-            TypeInfo *elts_type;
+            TypeInfo *of;
             ASTNode *head;
-        } list; // LIST_LITERAL
+        } array; // ARRAY_LITERAL
         struct {
             ASTNode *fn;
             ASTNode *expr;
@@ -1255,6 +1304,11 @@ typedef struct ASTNode
                 } fn;
                 struct {
                     ASTNode *members;
+
+                    bool is_generic;
+                    ASTNode *params;
+                    ASTNode *template;
+                    ASTNode *instance_of;
                 } strct;
             };
         } decl; // DECLARATION
@@ -1286,6 +1340,7 @@ typedef enum {
     PREC_TERM   = 10, // + -
     PREC_FACTOR = 20, // * /
     PREC_CALL   = 30, // ( .
+    PREC_UNARY  = 40, // ^
 } Precedence;
 
 typedef struct {
@@ -1332,7 +1387,7 @@ static inline ExprRule* get_expression_rule(TokenType type)
 ASTNode *parse_number(Parser *parser)
 {
     ASTNode *node = create_node_from_token(ASTNODE_NUMBER, current_token);
-    node->value._int = atoi(current_token->lexeme);
+    node->value._int = atoi(current_token->lexeme); // TODO: use strtol
     parser_advance(parser);
     return node;
 }
@@ -1382,7 +1437,7 @@ ASTNode *parse_grouping(Parser *parser)
 //{
 //    switch (type)
 //    {
-//        case TYPE_I32: return sizeof(int32_t);
+//        case TYPE_U32: return sizeof(int32_t);
 //        default: 
 //            errorln("Unreachable type %u in size_of_type", type);
 //            exit(1);
@@ -1393,7 +1448,7 @@ static_assert(__primitive_types_count == 5-1, "Cover all primitive types in prim
 PrimitiveType primitive_type_from_string(const char *type_string)
 {
          if (streq(type_string, primitive_type_as_string(PRIMITIVE_VOID)))   return PRIMITIVE_VOID;
-    else if (streq(type_string, primitive_type_as_string(PRIMITIVE_I32)))    return PRIMITIVE_I32;
+    else if (streq(type_string, primitive_type_as_string(PRIMITIVE_U32)))    return PRIMITIVE_U32;
     else if (streq(type_string, primitive_type_as_string(PRIMITIVE_STRING))) return PRIMITIVE_STRING;
     else if (streq(type_string, primitive_type_as_string(PRIMITIVE_BOOL)))   return PRIMITIVE_BOOL;
     else                                                                     return PRIMITIVE_UNKNOWN;
@@ -1410,34 +1465,35 @@ TypeInfo *get_type(const char *name)
     return create_type(KIND_NOT_DECLARED, name);
 }
 
-static_assert(__kinds_count == 8, "Cover all kinds in parse_type");
+static_assert(__kinds_count == 9, "Cover all kinds in parse_type");
 TypeInfo *parse_type(Parser *parser)
 {
-    if (current_token->type == TOK_IDENT) { // KIND_PRIMITIVE, KIND_STRUCT
+    if (current_token->type == TOK_ANY) { // KIND_ANY
+        return any_type();
+    } else if (current_token->type == TOK_IDENT) { // KIND_PRIMITIVE, KIND_STRUCT
         TypeInfo *type = get_type(current_token->lexeme);
         parser_advance(parser); // type
         return type;
-    } else if (current_token->type == TOK_L_SQPAREN) { // KIND_LIST
-        TypeInfo *list_type = create_type_without_name(KIND_LIST);
+    } else if (current_token->type == TOK_L_SQPAREN) { // KIND_ARRAY
+        TypeInfo *array_type = create_type_without_name(KIND_ARRAY);
         parser_advance(parser); // "["
-        list_type->list.elts_type = parse_type(parser);
+        array_type->array.of = parse_type(parser);
 
-        if (current_token->type == TOK_COMMA) { // fixed size list
+        if (current_token->type == TOK_COMMA) { // array
             parser_advance(parser); // ","
-            Token *size_token = parser_expect(parser, TOK_INTEGER);
-            list_type->list.is_sized = true;
-            list_type->list.size = atoi(size_token->lexeme);
+            Token *size_token = parser_expect(parser, TOK_NUMBER);
+            array_type->array.size = atoi(size_token->lexeme); // TODO: I should parse an expression and then type check it and see if it's uint
         }
         
         parser_expect(parser, TOK_R_SQPAREN);
-        return list_type;
+        return array_type;
     } else if (current_token->type == TOK_L_PAREN) { // KIND_FUNCTION
         todoln("Parse function type");
         exit(1);
-    } else if (current_token->type == TOK_STAR) { // KIND_POINTER
+    } else if (current_token->type == TOK_HAT) { // KIND_POINTER
         TypeInfo *pointer_type = create_type_without_name(KIND_POINTER);
-        parser_advance(parser); // "*"
-        pointer_type->pointed_type = parse_type(parser);
+        parser_advance(parser); // "^"
+        pointer_type->ptr.to = parse_type(parser);
         return pointer_type;
     } else {
         loc_print(current_token->loc);
@@ -1571,6 +1627,31 @@ void _parse_struct_declaration(Parser *parser, ASTNode *node, Symbol *sym)
     sym->type->strct.members = (Symbols){0};
     
     parser_advance(parser); // "struct"
+
+    if (current_token->type == TOK_LESS_THAN) { // struct is generic
+        parser_advance(parser); // "<"
+        sym->type->strct.is_generic = true;
+
+        ASTNode **next_param = &node->decl.strct.params;
+        Symbols params_symbols = {0};
+        TypeInfos params_types = {0};
+
+        while (current_token->type != TOK_GREATER_THAN) {
+            ASTNode *param = parse_declaration(parser);
+            da_push(&params_symbols, param->decl.sym);
+            da_push(&params_types, param->decl.sym->type);
+
+            *next_param = param;
+            next_param = &param->next;
+            
+            if (current_token->type == TOK_COMMA) parser_advance(parser); // ","
+        }
+        parser_advance(parser); // ">"
+
+        sym->strct.params = params_symbols;
+        sym->type->strct.params = params_types;
+    }
+
     parser_expect(parser, TOK_EQUALS);
 
     // TODO: should I push/pop new scope?
@@ -1824,22 +1905,21 @@ ASTNode *parse_call_infix(Parser *parser, ASTNode *left)
     return node;
 }
 
-ASTNode *parse_member_access(Parser *parser, ASTNode *left)
+ASTNode *parse_dot_operator(Parser *parser, ASTNode *left)
 {
-    parser_expect(parser, TOK_DOT);
+    Token *dot_token = parser_expect(parser, TOK_DOT);
 
-    if (current_token->type != TOK_IDENT) {
-        loc_print(current_token->loc);
-        errorln("Expected member name after '.'");
-        exit(1);
+    if (current_token->type == TOK_IDENT) {
+        Token *member_token = parser_expect(parser, TOK_IDENT);
+        ASTNode *node = create_node(ASTNODE_MEMBER_ACCESS, member_token->lexeme, dot_token->loc);
+        node->accessed_struct = left;
+        return node;
+    } else {
+        ASTNode *node = create_node_without_name(ASTNODE_UNARY, dot_token->loc);
+        node->unary.operator = OP_DEREFERENCE;
+        node->unary.operand = left;
+        return node;
     }
-    
-    ASTNode *node = create_node(ASTNODE_MEMBER_ACCESS, current_token->lexeme, left->loc); // TODO: left->loc ? 
-    node->accessed_struct = left;
-    
-    parser_advance(parser); // member name
-    
-    return node;
 }
 
 ASTNode *parse_ident(Parser *parser)
@@ -1899,23 +1979,36 @@ size_t node_list_length(ASTNode *list)
     return len;
 }
 
-ASTNode *parse_list_literal(Parser *parser)
+ASTNode *parse_array_literal(Parser *parser)
 {
     parser_expect(parser, TOK_L_SQPAREN);
 
-    ASTNode *node = create_node_without_name(ASTNODE_LIST_LITERAL, current_token->loc);
-    node->list.head = parse_expression_list(parser);
+    ASTNode *node = create_node_without_name(ASTNODE_ARRAY_LITERAL, current_token->loc);
+    node->array.head = parse_expression_list(parser);
 
-    size_t size = node_list_length(node->list.head);
-    node->list.size = size;
-    node->list.elts_type = create_type_without_name(size > 0 ? KIND_NOT_DECLARED : KIND_NOT_INFERRED);
+    size_t size = node_list_length(node->array.head);
+    node->array.size = size;
+    node->array.of = create_type_without_name(size > 0 ? KIND_NOT_DECLARED : KIND_NOT_INFERRED);
 
     parser_expect(parser, TOK_R_SQPAREN);
 
     return node;
 }
 
-static_assert(__tok_types_count == 28, "Cover all token types in expression_rules table");
+ASTNode *parse_address_of(Parser *parser)
+{
+    ASTNode *node = create_node_from_token(ASTNODE_UNARY, current_token);
+    node->unary.operator = OP_ADDRESS_OF;
+    parser_advance(parser); // "^"
+    node->unary.operand = parse_expression(parser);
+    if (!node->unary.operand) {
+        todoln("Report this error");
+        exit(1);
+    }
+    return node;
+}
+
+static_assert(__tok_types_count == 32, "Cover all token types in expression_rules table");
 ExprRule expression_rules[__tok_types_count] = {
     // No expression rules related to these tokens
     [TOK_IF]         = {NULL, NULL, PREC_NONE},
@@ -1925,6 +2018,7 @@ ExprRule expression_rules[__tok_types_count] = {
     [TOK_FOR]        = {NULL, NULL, PREC_NONE},
     [TOK_RETURN]     = {NULL, NULL, PREC_NONE},
     [TOK_STRUCT]     = {NULL, NULL, PREC_NONE},
+    [TOK_ANY]        = {NULL, NULL, PREC_NONE},
     [TOK_R_PAREN]    = {NULL, NULL, PREC_NONE},
     [TOK_R_SQPAREN]  = {NULL, NULL, PREC_NONE},
     [TOK_L_CUPAREN]  = {NULL, NULL, PREC_NONE},
@@ -1937,27 +2031,30 @@ ExprRule expression_rules[__tok_types_count] = {
     [TOK_EOF]        = {NULL, NULL, PREC_NONE},
 
     // Primaries
-    [TOK_IDENT]   = {parse_ident,  NULL, PREC_NONE},
-    [TOK_INTEGER] = {parse_number, NULL, PREC_NONE},
-    [TOK_STRING]  = {parse_string, NULL, PREC_NONE},
-    [TOK_TRUE]    = {parse_true,   NULL, PREC_NONE},
-    [TOK_FALSE]   = {parse_false,  NULL, PREC_NONE},
-    [TOK_L_SQPAREN]  = {parse_list_literal, NULL, PREC_NONE}, // TODO: what prec?
+    [TOK_IDENT]     = {parse_ident,         NULL, PREC_NONE},
+    [TOK_NUMBER]    = {parse_number,        NULL, PREC_NONE},
+    [TOK_STRING]    = {parse_string,        NULL, PREC_NONE},
+    [TOK_TRUE]      = {parse_true,          NULL, PREC_NONE},
+    [TOK_FALSE]     = {parse_false,         NULL, PREC_NONE},
+    [TOK_L_SQPAREN] = {parse_array_literal, NULL, PREC_NONE}, // TODO: what prec?
 
     // Arithmetic operators
-    [TOK_PLUS]    = {NULL, parse_binary, PREC_TERM},
-    [TOK_STAR]    = {NULL, parse_binary, PREC_FACTOR},
+    [TOK_PLUS] = {NULL, parse_binary, PREC_TERM},
+    [TOK_STAR] = {NULL, parse_binary, PREC_FACTOR},
 
     // Logical operators
     [TOK_DOUBLE_EQUALS] = {NULL, parse_binary, PREC_TERM},
+    [TOK_LESS_THAN]     = {NULL, parse_binary, PREC_TERM},
+    [TOK_GREATER_THAN]  = {NULL, parse_binary, PREC_TERM},
 
     // Grouping and others
-    [TOK_L_PAREN] = {parse_grouping, parse_call_infix,   PREC_CALL},
-    [TOK_DOT]     = {NULL,           parse_member_access, PREC_CALL},
+    [TOK_L_PAREN] = {parse_grouping,   parse_call_infix,   PREC_CALL},
+    [TOK_DOT]     = {NULL,             parse_dot_operator, PREC_CALL},
+    [TOK_HAT]     = {parse_address_of, NULL,               PREC_UNARY},
 };
 
-static_assert(__tok_types_count == 28, "Cover all token types in parse_statement");
-static_assert(__astnode_types_count == 19, "Cover all ast node types in parsing");
+static_assert(__tok_types_count == 32, "Cover all token types in parse_statement");
+static_assert(__astnode_types_count == 20, "Cover all ast node types in parsing");
 ASTNode *parse_statement(Parser *parser)
 {
     Token *token = current_token;
@@ -2153,9 +2250,10 @@ Symbol *get_struct_member(TypeInfo *struct_type, const char *member_name)
     return NULL;
 }
 
+TypeInfo *unary_type(ASTNode *node);
 TypeInfo *binop_type(ASTNode *node);
 
-static_assert(__astnode_types_count == 19, "Cover all ast node types in node_type");
+static_assert(__astnode_types_count == 20, "Cover all ast node types in node_type");
 TypeInfo *node_type(ASTNode *node)
 {
     if (!node) {
@@ -2169,23 +2267,11 @@ TypeInfo *node_type(ASTNode *node)
     TypeInfo *result_type = NULL;
 
     switch (node->type) {
-
-    case ASTNODE_PROGRAM:
-    case ASTNODE_DECLARATION:
-    case ASTNODE_ASSIGNMENT:
-    case ASTNODE_BLOCK:
-    case ASTNODE_IF:
-    case ASTNODE_ELIF:
-    case ASTNODE_ELSE:
-    case ASTNODE_WHILE:
-    case ASTNODE_FOR:
-    case ASTNODE_RETURN: {
-        unreachableln("Node %u in node_type", node->type);
-        exit(1);
-    }
-
     case ASTNODE_MEMBER_ACCESS: {
         TypeInfo *struct_type = node_type(node->accessed_struct);
+        if (struct_type->kind == KIND_POINTER) {
+            struct_type = struct_type->ptr.to;
+        }
         result_type = get_struct_member(struct_type, node->name)->type;
     } break;
 
@@ -2194,17 +2280,17 @@ TypeInfo *node_type(ASTNode *node)
         result_type = node_type(node->call.callee)->fn.ret_type;
     } break;
 
+    case ASTNODE_UNARY: result_type = unary_type(node); break;
     case ASTNODE_BINOP: result_type = binop_type(node); break;
 
-    case ASTNODE_NUMBER: result_type = primitive_type(PRIMITIVE_I32);    break;
+    case ASTNODE_NUMBER: result_type = primitive_type(PRIMITIVE_U32);    break;
     case ASTNODE_STRING: result_type = primitive_type(PRIMITIVE_STRING); break;
     case ASTNODE_BOOL:   result_type = primitive_type(PRIMITIVE_BOOL);   break;
-    case ASTNODE_LIST_LITERAL: {
-        TypeInfo *list_type = create_type_without_name(KIND_LIST);
-        list_type->list.size = node->list.size;
-        list_type->list.is_sized = node->list.size > 0;
-        list_type->list.elts_type = node->list.elts_type;
-        result_type = list_type;
+    case ASTNODE_ARRAY_LITERAL: {
+        TypeInfo *array_type = create_type_without_name(KIND_ARRAY);
+        array_type->array.size = node->array.size;
+        array_type->array.of = node->array.of;
+        result_type = array_type;
     } break;
 
     case ASTNODE_IDENT: {
@@ -2234,18 +2320,55 @@ TypeInfo *node_type(ASTNode *node)
     return result_type;
 }
 
+TypeInfo *unary_type(ASTNode *node)
+{
+    TypeInfo *operand_type = node_type(node->unary.operand);
+
+    //loc_print(node->loc);
+    //debug("Unary operation: %s ", operator_as_string(node->unary.operator));
+    //type_print(operand_type);
+    //printf("\n");
+
+    switch (node->unary.operator) {
+    case OP_ADDRESS_OF:
+        TypeInfo *pointer_type = create_type_without_name(KIND_POINTER);
+        pointer_type->ptr.to = operand_type;
+        return pointer_type;
+
+    case OP_DEREFERENCE:
+        if (operand_type->kind != KIND_POINTER) {
+            loc_print(node->loc);
+            error("Cannot dereference '%s' of type '", node->unary.operand->name);
+            type_print(operand_type);
+            printf("'\n");
+            exit(1);
+        }
+        return operand_type->ptr.to;
+
+    default:
+        unreachableln("Operator %u in unary_type", node->unary.operator);
+        exit(1);
+    }
+
+    loc_print(node->loc);
+    error("Invalid unary operation: %s'", operator_as_string(node->unary.operator));
+    type_print(operand_type);
+    printf("'\n");
+    exit(1);
+}
+
 // TODO: here I can do shortcircuit optimizations
 TypeInfo *binop_type(ASTNode *node)
 {
     TypeInfo *left  = node_type(node->binary.left);
     TypeInfo *right = node_type(node->binary.right);
 
-    loc_print(node->loc);
-    debugln("Operation: ('");
-    type_print(left);
-    printf("' %s '", operator_as_string(node->binary.op));
-    type_print(right);
-    printf("')\n");
+    //loc_print(node->loc);
+    //debugln("Binary operation: ('");
+    //type_print(left);
+    //printf("' %s '", operator_as_string(node->binary.op));
+    //type_print(right);
+    //printf("')\n");
 
     switch (node->binary.op) {
     case OP_PLUS:
@@ -2264,7 +2387,7 @@ TypeInfo *binop_type(ASTNode *node)
     }
 
     loc_print(node->loc);
-    error("Invalid operation: ('");
+    error("Invalid binary operation: ('");
     type_print(left);
     printf("' %s '", operator_as_string(node->binary.op));
     type_print(right);
@@ -2341,10 +2464,11 @@ void register_scope_types_and_functions(ASTNode *root)
     }
 }
 
-static_assert(__astnode_types_count == 19, "Cover all ast node types in type_check");
+static_assert(__astnode_types_count == 20, "Cover all ast node types in type_check");
 void type_check(ASTNode *node)
 {
     if (!node) return;
+    if (node->type_checked) return;
 
     switch (node->type) {
     case ASTNODE_PROGRAM: {
@@ -2392,11 +2516,9 @@ void type_check(ASTNode *node)
             }
             register_symbol(node->decl.sym);
             
-            bool inferred = false;
             if (node->decl.sym->type->kind == KIND_NOT_INFERRED) {
                 free(node->decl.sym->type);
                 node->decl.sym->type = node_type(node->decl.var.init->assign.rhs);
-                inferred = true;
             }
             if (node->decl.sym->type->kind == KIND_NOT_DECLARED) {
                 node->decl.sym->type = get_type(node->decl.sym->type->name);
@@ -2407,9 +2529,7 @@ void type_check(ASTNode *node)
                 }
             }
 
-            if (!inferred && node->decl.var.init) {
-                type_check(node->decl.var.init);
-            }
+            if (node->decl.var.init) type_check(node->decl.var.init);
         } break;
         case SYM_FUNCTION: {
             ASTNode *param_node = node->decl.fn.params;
@@ -2473,19 +2593,19 @@ void type_check(ASTNode *node)
         type_check(node->assign.lhs);
         TypeInfo *lhs_type = node_type(node->assign.lhs);
 
-        if (lhs_type->kind == KIND_LIST) {
-            ASTNode *list_node = node->assign.rhs;
-            if (lhs_type->list.is_sized && lhs_type->list.size != list_node->list.size) {
+        if (lhs_type->kind == KIND_ARRAY) {
+            ASTNode *array_node = node->assign.rhs;
+            if (lhs_type->array.size > 0 && lhs_type->array.size != array_node->array.size) {
                 loc_print(node->loc);
-                // TODO: create a type from the list_node and use are_types_equal_with_errors
-                errorln("Assignment was expecting a list of size %zu, but got size %zu", lhs_type->list.size,
-                        list_node->list.size);
+                // TODO: create a type from the array_node and use are_types_equal_with_errors
+                errorln("Assignment was expecting a array of size %zu, but got size %zu", lhs_type->array.size,
+                        array_node->array.size);
                 exit(1);
             }
-            if (list_node->list.elts_type->kind == KIND_NOT_INFERRED) {
-                list_node->list.elts_type = lhs_type->list.elts_type;
+            if (array_node->array.of->kind == KIND_NOT_INFERRED) {
+                array_node->array.of = lhs_type->array.of;
             }
-            type_check(list_node); // populate list.elts_type
+            type_check(array_node); // populate array.of
         }
 
         match_type(node->assign.rhs, lhs_type);
@@ -2559,6 +2679,10 @@ void type_check(ASTNode *node)
         type_check(node->accessed_struct);
         TypeInfo *struct_type = node_type(node->accessed_struct);
 
+        if (struct_type->kind == KIND_POINTER) {
+            struct_type = struct_type->ptr.to;
+        }
+
         if (struct_type->kind != KIND_STRUCT) {
             loc_print(node->loc);
             errorln("Cannot access member '%s' on %s", node->name, kind_as_string(struct_type->kind));
@@ -2618,6 +2742,14 @@ void type_check(ASTNode *node)
         }
     } break;
 
+    case ASTNODE_UNARY: {
+        type_check(node->unary.operand);
+        if (node->unary.operator == OP_ADDRESS_OF) {
+            todoln("Check if operand is a lvalue");
+            exit(1);
+        }
+    } break;
+
     case ASTNODE_BINOP: {
         type_check(node->binary.left);
         type_check(node->binary.right);
@@ -2648,10 +2780,10 @@ void type_check(ASTNode *node)
     case ASTNODE_BOOL:
         break;
 
-    case ASTNODE_LIST_LITERAL: {
-        if (node->list.size) {
-            TypeInfo *elts_type = node_type(node->list.head);
-            node->list.elts_type = elts_type;
+    case ASTNODE_ARRAY_LITERAL: {
+        if (node->array.size) {
+            TypeInfo *elts_type = node_type(node->array.head);
+            node->array.of = elts_type;
         }
     } break;
 
@@ -2659,11 +2791,13 @@ void type_check(ASTNode *node)
         unreachableln("Ast node type %u in type_check", node->type);
         exit(1);
     }
+
+    node->type_checked = true;
 }
 
 void generate_fn_signature(Symbol *sym, FILE *f)
 {
-    if (sym->type->fn.ret_type->kind == KIND_LIST) {
+    if (sym->type->fn.ret_type->kind == KIND_ARRAY) {
         todoln("Return list from function");
         exit(1);
     }
@@ -2771,7 +2905,19 @@ void extract_declarations(ASTNode *node, Nodes *type_defs, Nodes *struct_defs, N
     }
 }
 
-static_assert(__astnode_types_count == 19, "Cover all ast node types in generate_c_code");
+void generate_c_code(ASTNode *node, FILE *f);
+void generate_unary_operation(ASTNode *node, FILE *f)
+{
+    switch (node->unary.operator) {
+    case OP_ADDRESS_OF:    fprintf(f, "&("); generate_c_code(node->unary.operand, f); fprintf(f, ")"); break;
+    case OP_DEREFERENCE:   fprintf(f, "*("); generate_c_code(node->unary.operand, f); fprintf(f, ")"); break;
+    default:
+        unreachableln("Operator %u in generate_unary_operation", node->unary.operator);
+        exit(1);
+    }
+}
+
+static_assert(__astnode_types_count == 20, "Cover all ast node types in generate_c_code");
 void generate_c_code(ASTNode *node, FILE *f)
 {
     if (!node) return;
@@ -2855,7 +3001,7 @@ void generate_c_code(ASTNode *node, FILE *f)
             if (node->decl.var.init) {
                 generate_c_code(node->decl.var.init, f);
             } else {
-                if (node->decl.sym->type->kind != KIND_LIST) {
+                if (node->decl.sym->type->kind != KIND_ARRAY) {
                     fprintf(f, "%s", node->decl.sym->name);
                 }
                 fprintf(f, ";\n");
@@ -2871,13 +3017,13 @@ void generate_c_code(ASTNode *node, FILE *f)
     } break;
 
     case ASTNODE_ASSIGNMENT: {
-        TypeInfo *lhs_type = node_type(node->assign.lhs);
+        TypeInfo *lhs_type = node->assign.lhs->resolved_type;
 
-        if (lhs_type->kind == KIND_LIST && !node->assign.is_init) {
+        if (lhs_type->kind == KIND_ARRAY && !node->assign.is_init) {
             fprintf(f, "memcpy(");
             generate_c_code(node->assign.lhs, f);
             fprintf(f, ", (");
-            generate_type(lhs_type->list.elts_type, NULL, f);
+            generate_type(lhs_type->array.of, NULL, f);
             fprintf(f, "[])");
             generate_c_code(node->assign.rhs, f);
             fprintf(f, ", sizeof(");
@@ -2974,8 +3120,12 @@ void generate_c_code(ASTNode *node, FILE *f)
 
     case ASTNODE_MEMBER_ACCESS: {
         generate_c_code(node->accessed_struct, f);
-        fprintf(f, ".%s", node->name);
+        if (node->accessed_struct->resolved_type->kind == KIND_POINTER) fprintf(f, "->");
+        else fprintf(f, ".");
+        fprintf(f, "%s", node->name);
     } break;
+
+    case ASTNODE_UNARY: generate_unary_operation(node, f); break;
 
     case ASTNODE_BINOP: {
         fprintf(f, "(");
@@ -2997,9 +3147,9 @@ void generate_c_code(ASTNode *node, FILE *f)
         fprintf(f, "%d", node->value._bool ? 1 : 0);    
     } break;
 
-    case ASTNODE_LIST_LITERAL: {
+    case ASTNODE_ARRAY_LITERAL: {
         fprintf(f, "{");
-        ASTNode *elt = node->list.head;
+        ASTNode *elt = node->array.head;
         while (elt) {
             generate_c_code(elt, f);
             if (elt->next) fprintf(f, ", ");
@@ -3022,8 +3172,10 @@ void generate_c_code(ASTNode *node, FILE *f)
 static_assert(__primitive_types_count == 5-1, "Instantiate all primitive types in initialize");
 void initialize(void)
 {
+    _type_any   = (TypeInfo){ .kind = KIND_ANY };
+
     _type_primitive_void   = (TypeInfo){ .kind = KIND_PRIMITIVE, .primitive = PRIMITIVE_VOID };
-    _type_primitive_i32    = (TypeInfo){ .kind = KIND_PRIMITIVE, .primitive = PRIMITIVE_I32 };
+    _type_primitive_u32    = (TypeInfo){ .kind = KIND_PRIMITIVE, .primitive = PRIMITIVE_U32 };
     _type_primitive_string = (TypeInfo){ .kind = KIND_PRIMITIVE, .primitive = PRIMITIVE_STRING };
     _type_primitive_bool   = (TypeInfo){ .kind = KIND_PRIMITIVE, .primitive = PRIMITIVE_BOOL };
 
@@ -3034,11 +3186,11 @@ void initialize(void)
     _types_main_fn[0] = main_fn; // (void) -> void
 
     main_fn = create_type_without_name(KIND_FUNCTION);
-    main_fn->fn.ret_type = primitive_type(PRIMITIVE_I32);
+    main_fn->fn.ret_type = primitive_type(PRIMITIVE_U32);
     _types_main_fn[1] = main_fn; // (void) -> int
 
-    TypeInfo *main_args_type = create_type_without_name(KIND_LIST);
-    main_args_type->list.elts_type = primitive_type(PRIMITIVE_STRING);
+    TypeInfo *main_args_type = create_type_without_name(KIND_ARRAY);
+    main_args_type->array.of = primitive_type(PRIMITIVE_STRING);
 
     main_fn = create_type_without_name(KIND_FUNCTION);
     main_fn->fn.ret_type = primitive_type(PRIMITIVE_VOID);
@@ -3046,7 +3198,7 @@ void initialize(void)
     _types_main_fn[2] = main_fn; // ([string]) -> void
 
     main_fn = create_type_without_name(KIND_FUNCTION);
-    main_fn->fn.ret_type = primitive_type(PRIMITIVE_I32);
+    main_fn->fn.ret_type = primitive_type(PRIMITIVE_U32);
     da_push(&main_fn->fn.params, main_args_type);
     _types_main_fn[3] = main_fn; // ([string]) -> int
 }

@@ -1,0 +1,5 @@
+malloc : (size: uint) -> ^Any = extern;
+
+main : () -> int {
+    return 0;
+}

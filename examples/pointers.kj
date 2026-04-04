@@ -1,18 +1,20 @@
 main : () -> int = {
     p_int: ^int;
 
-    x: int;
-    p = ^x;
-    p .= 3;
+    x: int = 5;
+    p_int = ^x;
+    p_int. = 3;
 
-    p.alloc(int); // n: uint = 1 (default)
-    p .= 5;
-    p.free();
-    p = ^x;
+    //p.alloc(int); // n: uint = 1 (default)
+    //p .= 5;
+    //p.free();
+    //p = ^x;
 
     S : struct = {
-        x: int;
+        y: int;
     }
-    p_S := Ptr.alloc(S);
-    p_S.x = 5; // autodereferencing
+    s: S;
+    //p_S := Ptr.alloc(S);
+    p_S := ^s;
+    p_S.y = 5; // autodereferencing
 }
