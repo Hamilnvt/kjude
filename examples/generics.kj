@@ -3,6 +3,11 @@ GenericStruct : struct<T: Type, K: Type> = {
     k: K;
 }
 
+//Array : struct<T: Type, N: uint> = {
+//    data: [T, N];
+//}
+
 main : () -> uint = {
+    S : GenericStruct<uint, string>;
     return 0;
 }

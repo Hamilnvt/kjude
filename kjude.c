@@ -743,6 +743,7 @@ typedef enum
 
     KIND_TYPE,
     KIND_ANY,
+    KIND_GENERIC,
     KIND_PRIMITIVE,
     KIND_STRUCT,
     KIND_FUNCTION,
@@ -752,7 +753,7 @@ typedef enum
     __kinds_count
 } Kind;
 
-static_assert(__kinds_count == 9, "Cover all kinds in kind_as_string");
+static_assert(__kinds_count == 10, "Cover all kinds in kind_as_string");
 char *kind_as_string(Kind kind)
 {
     switch (kind) {
@@ -760,6 +761,7 @@ char *kind_as_string(Kind kind)
     case KIND_NOT_INFERRED: return "Not Inferred";
     case KIND_TYPE:         return "Type";
     case KIND_ANY:          return "Any";
+    case KIND_GENERIC:      return "Generic Parameter";
     case KIND_PRIMITIVE:    return "Primitive";
     case KIND_STRUCT:       return "Struct";
     case KIND_FUNCTION:     return "Function";
@@ -827,7 +829,7 @@ typedef struct Symbols
     size_t capacity;
 } Symbols;
 
-static_assert(__kinds_count == 9, "Cover all kinds in TypeInfo struct");
+static_assert(__kinds_count == 10, "Cover all kinds in TypeInfo struct");
 typedef struct TypeInfo
 {
     Kind kind;
@@ -859,13 +861,14 @@ typedef struct TypeInfo
 
 void type_print(TypeInfo *type);
 
-static_assert(__kinds_count == 9, "Cover all kinds in generate_type");
+static_assert(__kinds_count == 10, "Cover all kinds in generate_type");
 void generate_type(TypeInfo *type, char *name, FILE *f)
 {
     switch (type->kind) {
     case KIND_NOT_DECLARED:
     case KIND_NOT_INFERRED:
-        unreachableln("Type checking should have resolved KIND_NOT_DECLARED and KIND_NOT_INFERRED");
+    case KIND_GENERIC:
+        unreachableln("Type checking should have resolved KIND_NOT_DECLARED, KIND_NOT_INFERRED and KIND_GENERIC");
         exit(1);
 
     case KIND_TYPE:
@@ -938,13 +941,15 @@ bool _are_types_equal(TypeInfo *a, TypeInfo *b, bool report_errors, Location *lo
         return false;
     }
 
-    static_assert(__kinds_count == 9, "Cover all kinds in _are_types_equal");
+    static_assert(__kinds_count == 10, "Cover all kinds in _are_types_equal");
     switch (a->kind) {
 
     case KIND_NOT_DECLARED:
     case KIND_NOT_INFERRED:
     case KIND_ANY:
         return true;
+
+    case KIND_GENERIC: return(streq(a->name, b->name));
 
     case KIND_TYPE: return _are_types_equal(a->type_value, b->type_value, report_errors, loc_a, loc_b);
 
@@ -1032,17 +1037,18 @@ static inline bool are_types_equal(TypeInfo *a, TypeInfo *b) { return _are_types
 
 static inline TypeInfo *primitive_type(PrimitiveType type);
 
-static_assert(__kinds_count == 9, "Cover all kinds in type_print");
+static_assert(__kinds_count == 10, "Cover all kinds in type_print");
 void type_print(TypeInfo *type)
 {
     switch (type->kind) {
     case KIND_NOT_DECLARED:
     case KIND_NOT_INFERRED:
     case KIND_ANY:
+    case KIND_TYPE:
         printf("%s", kind_as_string(type->kind));
         break;
 
-    case KIND_TYPE: type_print(type->type_value); break;
+    case KIND_GENERIC: printf("%s", type->name); break;
 
     case KIND_PRIMITIVE: printf("%s", primitive_type_as_string(type->primitive)); break;
 
@@ -1188,6 +1194,8 @@ void dump_symbols(void)
     }
 }
 
+static TypeInfo _type_type;
+static inline TypeInfo *type_type(void) { return &_type_type; }
 static TypeInfo _type_any;
 static inline TypeInfo *any_type(void) { return &_type_any; }
 
@@ -1465,14 +1473,38 @@ TypeInfo *get_type(const char *name)
     return create_type(KIND_NOT_DECLARED, name);
 }
 
-static_assert(__kinds_count == 9, "Cover all kinds in parse_type");
+void parse_generic_type(Parser *parser, TypeInfo *type)
+{
+    if (type->kind != KIND_STRUCT && !type->strct.is_generic) {
+        loc_print(current_token->loc);
+        error("Type ");
+        if (strlen(type->name) > 0) printf("%s ", type->name);
+        type_print(type);
+        printf(" is not generic\n");
+        exit(1);
+    }
+
+    parser_expect(parser, TOK_LESS_THAN);
+    todoln("Parse generic struct %s", type->name);
+    parser_expect(parser, TOK_GREATER_THAN);
+}
+
+static_assert(__kinds_count == 10, "Cover all kinds in parse_type");
 TypeInfo *parse_type(Parser *parser)
 {
     if (current_token->type == TOK_ANY) { // KIND_ANY
         return any_type();
     } else if (current_token->type == TOK_IDENT) { // KIND_PRIMITIVE, KIND_STRUCT
-        TypeInfo *type = get_type(current_token->lexeme);
+        TypeInfo *type;
+        if (streq(current_token->lexeme, "Type")) {
+            type = type_type();
+        } else {
+            type = get_type(current_token->lexeme);
+        }
         parser_advance(parser); // type
+        if (current_token->type == TOK_LESS_THAN) {
+            parse_generic_type(parser, type);
+        }
         return type;
     } else if (current_token->type == TOK_L_SQPAREN) { // KIND_ARRAY
         TypeInfo *array_type = create_type_without_name(KIND_ARRAY);
@@ -1623,6 +1655,8 @@ static inline ASTNode *parse_declaration_statement_with_prefix(Parser *parser, c
 void _parse_struct_declaration(Parser *parser, ASTNode *node, Symbol *sym)
 {
     sym->type = create_type(KIND_STRUCT, sym->name);
+    sym->strct.params = (Symbols){0};
+    sym->type->strct.params = (TypeInfos){0};
     sym->strct.members = (Symbols){0};
     sym->type->strct.members = (Symbols){0};
     
@@ -1630,6 +1664,7 @@ void _parse_struct_declaration(Parser *parser, ASTNode *node, Symbol *sym)
 
     if (current_token->type == TOK_LESS_THAN) { // struct is generic
         parser_advance(parser); // "<"
+        sym->strct.is_generic = true;
         sym->type->strct.is_generic = true;
 
         ASTNode **next_param = &node->decl.strct.params;
@@ -1638,6 +1673,12 @@ void _parse_struct_declaration(Parser *parser, ASTNode *node, Symbol *sym)
 
         while (current_token->type != TOK_GREATER_THAN) {
             ASTNode *param = parse_declaration(parser);
+
+            if (param->decl.sym->type->kind == KIND_TYPE) {
+                param->decl.sym->kind = SYM_TYPE;
+                param->decl.sym->type = create_type(KIND_GENERIC, param->decl.sym->name);
+            }
+
             da_push(&params_symbols, param->decl.sym);
             da_push(&params_types, param->decl.sym->type);
 
@@ -1650,22 +1691,30 @@ void _parse_struct_declaration(Parser *parser, ASTNode *node, Symbol *sym)
 
         sym->strct.params = params_symbols;
         sym->type->strct.params = params_types;
+
+        debugln("Generic struct has %zu parameters:", params_symbols.count);
+        for (size_t i = 0; i < params_symbols.count; i++) {
+            debug("- %s: ", params_symbols.items[i]->name);
+            type_print(params_types.items[i]);
+            printf("\n");
+        }
     }
 
     parser_expect(parser, TOK_EQUALS);
 
-    // TODO: should I push/pop new scope?
     parser_expect(parser, TOK_L_CUPAREN);
 
     ASTNode **next_member = &node->decl.strct.members;
     Symbols members = {0};
-    while (current_token->type != TOK_R_CUPAREN) {
-        ASTNode *member = parse_declaration_statement_with_prefix(parser, sym->name);
-        da_push(&members, member->decl.sym);
-        *next_member = member;
-        next_member = &member->next;
-    }
-    parser_expect(parser, TOK_R_CUPAREN);
+    push_new_scope(); {
+        while (current_token->type != TOK_R_CUPAREN) {
+            ASTNode *member = parse_declaration_statement_with_prefix(parser, sym->name);
+            da_push(&members, member->decl.sym);
+            *next_member = member;
+            next_member = &member->next;
+        }
+        parser_expect(parser, TOK_R_CUPAREN);
+    } pop_scope();
 
     sym->strct.members = members;
     sym->type->strct.members = members;
@@ -2532,16 +2581,16 @@ void type_check(ASTNode *node)
             if (node->decl.var.init) type_check(node->decl.var.init);
         } break;
         case SYM_FUNCTION: {
+            push_new_scope();
+
             ASTNode *param_node = node->decl.fn.params;
             while (param_node) {
                 type_check(param_node);
                 param_node = param_node->next;
             }
-            Scope fn_scope = {0};
             for (size_t i = 0; i < node->decl.sym->fn.params.count; i++) {
                 Symbol *param = node->decl.sym->fn.params.items[i];
                 node->decl.sym->type->fn.params.items[i] = param->type;
-                da_push(&fn_scope.symbols, param);
             }
 
             TypeInfo *ret_type = node->decl.sym->type->fn.ret_type;
@@ -2555,29 +2604,39 @@ void type_check(ASTNode *node)
                 node->decl.sym->type->fn.ret_type = ret_type;
             }
 
-            push_scope(fn_scope); {
-                type_check(node->decl.fn.block);
-            } pop_scope();
+            type_check(node->decl.fn.block);
+            pop_scope();
         } break;
         case SYM_TYPE: {
             if (node->decl.sym->type->kind == KIND_STRUCT) {
+                if (node->decl.sym->strct.is_generic) {
+                    push_new_scope();
+
+                    ASTNode *param_node = node->decl.strct.params;
+                    while (param_node) {
+                        type_check(param_node);
+                        param_node = param_node->next;
+                    }
+                    for (size_t i = 0; i < node->decl.sym->strct.params.count; i++) {
+                        Symbol *param = node->decl.sym->strct.params.items[i];
+                        node->decl.sym->type->strct.params.items[i] = param->type;
+                    }
+                }
+
                 ASTNode *member_node = node->decl.strct.members;
                 while (member_node) {
                     type_check(member_node);
                     member_node = member_node->next;
                 }
-                for (size_t i = 0; i < node->decl.sym->type->strct.members.count; i++) {
-                    Symbol *member = node->decl.sym->type->strct.members.items[i];
-                    if (member->type->kind == KIND_NOT_DECLARED) {
-                        member->type = get_type(member->type->name);
-                        if (member->type->kind == KIND_NOT_DECLARED) {
-                            loc_print(node->loc);
-                            errorln("Undeclared type '%s' for member '%s' (%zu) in struct '%s'",
-                                    member->type->name, member->name, i+1, node->decl.sym->name);
-                            exit(1);
-                        }
-                    }
+                for (size_t i = 0; i < node->decl.sym->strct.members.count; i++) {
+                    Symbol *member = node->decl.sym->strct.members.items[i];
+                    node->decl.sym->type->strct.params.items[i] = member->type;
                 }
+
+                if (node->decl.strct.is_generic) pop_scope();
+            } else if (node->decl.sym->type->kind == KIND_GENERIC) {
+                todoln("Type check Generic Parameter %s", node->decl.sym->name);
+                exit(1);
             } else {
                 todoln("Type check %s declaration node", kind_as_string(node->decl.sym->type->kind));
                 exit(1);
@@ -3172,7 +3231,8 @@ void generate_c_code(ASTNode *node, FILE *f)
 static_assert(__primitive_types_count == 5-1, "Instantiate all primitive types in initialize");
 void initialize(void)
 {
-    _type_any   = (TypeInfo){ .kind = KIND_ANY };
+    _type_type = (TypeInfo){ .kind = KIND_TYPE };
+    _type_any  = (TypeInfo){ .kind = KIND_ANY };
 
     _type_primitive_void   = (TypeInfo){ .kind = KIND_PRIMITIVE, .primitive = PRIMITIVE_VOID };
     _type_primitive_u32    = (TypeInfo){ .kind = KIND_PRIMITIVE, .primitive = PRIMITIVE_U32 };
