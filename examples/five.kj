@@ -1,11 +1,14 @@
-main : () -> int = {
+main : () -> uint = {
     local_function : () = { }
+
+    // y; // ignore this
 
     x := five();
     return x;
 }
 
-five : () -> int = {
+//five : (a: uint) -> uint = {
+five : () -> uint = {
     if   true: return 5;
     elif true: return 5;
     else       return 5;

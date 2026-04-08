@@ -1,13 +1,15 @@
-GenericStruct : struct<T: Type, K: Type> = {
-    t: T;
-    k: K;
-}
+//GenericStruct : struct<T: Type, K: Type> = {
+//    t: T;
+//    k: K;
+//}
 
 //Array : struct<T: Type, N: uint> = {
 //    data: [T, N];
 //}
 
 main : () -> uint = {
-    S : GenericStruct<uint, string>;
+    //S : GenericStruct<uint, string>;
+
+    t: Type = uint;
     return 0;
 }

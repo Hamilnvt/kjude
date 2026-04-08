@@ -1,5 +1,4 @@
 // TODO:
-// - write grammar
 // - invalidate C names for functions and variables (or better, mangle!)
 // - aliases and types
 //   > an alias is just an alias to a type, useful when you don't want to write 1000 times [string] so you just:
@@ -47,6 +46,15 @@
 //   > pointer
 //   > type
 // - Interesting conversation about future work: https://gemini.google.com/share/30240fe1ff3d
+
+// Grammar
+//
+// program -> (statement ;)*
+// statement ->
+//     ident : type
+//     ident : type = expr
+//     ident :      = expr
+// ...
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -260,6 +268,7 @@ bool read_entire_file(const char *path, String *source)
 #define KEYWORD_RETURN "return"
 #define KEYWORD_STRUCT "struct"
 #define KEYWORD_ANY    "Any"
+#define KEYWORD_TYPE   "Type"
 #define KEYWORD_TRUE   "true"
 #define KEYWORD_FALSE  "false"
 
@@ -278,6 +287,7 @@ typedef enum
     TOK_FALSE,
     //TOK_EXTERN, // TODO
     TOK_ANY,
+    TOK_TYPE,
     TOK_NUMBER,
     TOK_STRING,
     TOK_L_PAREN,
@@ -317,7 +327,7 @@ typedef struct
 
 char *token_type_as_string(TokenType type)
 {
-    static_assert(__tok_types_count == 32, "Cover all token types in token_type_as_string");
+    static_assert(__tok_types_count == 33, "Cover all token types in token_type_as_string");
     switch (type)
     {
         case TOK_EOF:           return "EOF";
@@ -330,6 +340,7 @@ char *token_type_as_string(TokenType type)
         case TOK_RETURN:        return KEYWORD_RETURN;
         case TOK_STRUCT:        return KEYWORD_STRUCT;
         case TOK_ANY:           return KEYWORD_ANY;
+        case TOK_TYPE:          return KEYWORD_TYPE;
         case TOK_TRUE:          return KEYWORD_TRUE;
         case TOK_FALSE:         return KEYWORD_FALSE;
         case TOK_NUMBER:        return "Number";
@@ -358,7 +369,7 @@ char *token_type_as_string(TokenType type)
     }
 }
 
-static_assert(__tok_types_count == 32, "Cover all token types in token_print");
+static_assert(__tok_types_count == 33, "Cover all token types in token_print");
 void token_print(const Token *tok)
 {
     switch (tok->type) {
@@ -376,6 +387,7 @@ void token_print(const Token *tok)
         case TOK_RETURN:
         case TOK_STRUCT:
         case TOK_ANY:
+        case TOK_TYPE:
         case TOK_TRUE:
         case TOK_FALSE:
         case TOK_EOF:
@@ -471,11 +483,7 @@ typedef struct
 {
     Tokens tokens;
     size_t pos;
-    Nodes functions_stack;
 } Parser;
-static inline void push_function(Parser *p, ASTNode *fn) { da_push(&p->functions_stack, fn); }
-static inline ASTNode *pop_function(Parser *p) { return da_pop(&p->functions_stack); }
-static inline ASTNode *current_function(Parser *p) { return p->functions_stack.items[p->functions_stack.count-1]; }
 
 // TODO: I want it to take the source code, it should not be responsible to open files and so I could lex strings in the code on the flight
 Lexer lexer_new(char *file_path)
@@ -531,7 +539,7 @@ static inline bool can_start_number(char c) { return isdigit(c); }
 static inline bool can_continue_number(char c) { return isdigit(c); }
 
 #define TOK_INVALID ((TokenType)-1)
-static_assert(__tok_types_count == 32, "Cover all token types in lexer_get_next_token");
+static_assert(__tok_types_count == 33, "Cover all token types in lexer_get_next_token");
 Token lexer_get_next_token(Lexer *lexer)
 {
     lexer_eat_spaces(lexer);
@@ -561,6 +569,7 @@ Token lexer_get_next_token(Lexer *lexer)
         else if (streq(token.lexeme, KEYWORD_RETURN)) token.type = TOK_RETURN;
         else if (streq(token.lexeme, KEYWORD_STRUCT)) token.type = TOK_STRUCT;
         else if (streq(token.lexeme, KEYWORD_ANY))    token.type = TOK_ANY;
+        else if (streq(token.lexeme, KEYWORD_TYPE))   token.type = TOK_TYPE;
         else if (streq(token.lexeme, KEYWORD_TRUE))   token.type = TOK_TRUE;
         else if (streq(token.lexeme, KEYWORD_FALSE))  token.type = TOK_FALSE;
         else                                          token.type = TOK_IDENT;
@@ -694,7 +703,8 @@ typedef enum
 typedef enum
 {
     // Unary
-    OP_ADDRESS_OF,
+    OP_POINTER_TO,
+
     OP_DEREFERENCE,
 
     // Binary
@@ -709,7 +719,7 @@ static_assert(__op_types_count == 5, "Cover all operators in operator_from_token
 Operator operator_from_token_type(TokenType type)
 {
     switch (type) {
-    case TOK_HAT:           return OP_ADDRESS_OF;
+    case TOK_HAT:           return OP_POINTER_TO;
     case TOK_DOT:           return OP_DEREFERENCE;
     case TOK_PLUS:          return OP_PLUS;
     case TOK_STAR:          return OP_STAR;
@@ -724,7 +734,7 @@ static_assert(__op_types_count == 5, "Cover all operators in operator_as_string"
 char *operator_as_string(Operator op)
 {
     switch (op) {
-    case OP_ADDRESS_OF:    return "^";
+    case OP_POINTER_TO:    return "^";
     case OP_DEREFERENCE:   return ".";
 
     case OP_PLUS:          return "+";
@@ -738,8 +748,7 @@ char *operator_as_string(Operator op)
 
 typedef enum
 {
-    KIND_NOT_DECLARED = 0,
-    KIND_NOT_INFERRED,
+    KIND_INVALID = 0,
 
     KIND_TYPE,
     KIND_ANY,
@@ -753,12 +762,11 @@ typedef enum
     __kinds_count
 } Kind;
 
-static_assert(__kinds_count == 10, "Cover all kinds in kind_as_string");
+static_assert(__kinds_count == 9, "Cover all kinds in kind_as_string");
 char *kind_as_string(Kind kind)
 {
     switch (kind) {
-    case KIND_NOT_DECLARED: return "Not Declared";
-    case KIND_NOT_INFERRED: return "Not Inferred";
+    case KIND_INVALID: return "Invalid";
     case KIND_TYPE:         return "Type";
     case KIND_ANY:          return "Any";
     case KIND_GENERIC:      return "Generic Parameter";
@@ -829,7 +837,7 @@ typedef struct Symbols
     size_t capacity;
 } Symbols;
 
-static_assert(__kinds_count == 10, "Cover all kinds in TypeInfo struct");
+static_assert(__kinds_count == 9, "Cover all kinds in TypeInfo struct");
 typedef struct TypeInfo
 {
     Kind kind;
@@ -861,19 +869,21 @@ typedef struct TypeInfo
 
 void type_print(TypeInfo *type);
 
-static_assert(__kinds_count == 10, "Cover all kinds in generate_type");
+static_assert(__kinds_count == 9, "Cover all kinds in generate_type");
 void generate_type(TypeInfo *type, char *name, FILE *f)
 {
     switch (type->kind) {
-    case KIND_NOT_DECLARED:
-    case KIND_NOT_INFERRED:
+    case KIND_INVALID:
     case KIND_GENERIC:
-        unreachableln("Type checking should have resolved KIND_NOT_DECLARED, KIND_NOT_INFERRED and KIND_GENERIC");
+        unreachableln("Type checking should have resolved KIND_INVALID and KIND_GENERIC");
         exit(1);
 
     case KIND_TYPE:
-        todo("Generate kind %s -> ", kind_as_string(KIND_TYPE));
-        type_print(type->type_value);
+        todo("Generate kind %s ", kind_as_string(KIND_TYPE));
+        if (type->type_value) {
+            printf(" -> ");
+            type_print(type->type_value);
+        }
         printf("\n");
         exit(1);
         break;
@@ -918,8 +928,6 @@ void generate_type(TypeInfo *type, char *name, FILE *f)
 bool _are_types_equal(TypeInfo *a, TypeInfo *b, bool report_errors, Location *loc_a, Location *loc_b)
 {
     // TODO: report locations (maybe pass symbol for name?)
-    (void)loc_a;
-    (void)loc_b;
 
     //debug("Comparing types: '");
     //type_print(a);
@@ -928,7 +936,9 @@ bool _are_types_equal(TypeInfo *a, TypeInfo *b, bool report_errors, Location *lo
     //printf("'\n");
 
     if (a == NULL || b == NULL) {
-        unreachableln("One of the types is NULL in _are_types_equal");
+        if (a == NULL && loc_a) loc_print(*loc_a);
+        else if (b == NULL && loc_b) loc_print(*loc_b);
+        unreachableln("Type is NULL in _are_types_equal");
         exit(1);
     }
 
@@ -941,11 +951,10 @@ bool _are_types_equal(TypeInfo *a, TypeInfo *b, bool report_errors, Location *lo
         return false;
     }
 
-    static_assert(__kinds_count == 10, "Cover all kinds in _are_types_equal");
+    static_assert(__kinds_count == 9, "Cover all kinds in _are_types_equal");
     switch (a->kind) {
 
-    case KIND_NOT_DECLARED:
-    case KIND_NOT_INFERRED:
+    case KIND_INVALID:
     case KIND_ANY:
         return true;
 
@@ -1037,12 +1046,11 @@ static inline bool are_types_equal(TypeInfo *a, TypeInfo *b) { return _are_types
 
 static inline TypeInfo *primitive_type(PrimitiveType type);
 
-static_assert(__kinds_count == 10, "Cover all kinds in type_print");
+static_assert(__kinds_count == 9, "Cover all kinds in type_print");
 void type_print(TypeInfo *type)
 {
     switch (type->kind) {
-    case KIND_NOT_DECLARED:
-    case KIND_NOT_INFERRED:
+    case KIND_INVALID:
     case KIND_ANY:
     case KIND_TYPE:
         printf("%s", kind_as_string(type->kind));
@@ -1070,7 +1078,8 @@ void type_print(TypeInfo *type)
     case KIND_ARRAY:
         printf("[");
         type_print(type->array.of);
-        printf(", %zu", type->array.size);
+        if (type->array.size > 0)
+            printf(", %zu", type->array.size);
         printf("]");
         break;
 
@@ -1104,24 +1113,47 @@ typedef union
     int32_t _int;
 } PrimitiveValue;
 
+typedef struct Scope
+{
+    size_t depth;
+    bool is_global;
+    Symbols symbols;
+    struct Scope *outer;
+} Scope;
+
+typedef struct
+{
+    Scope *current;
+    Scope **items;
+    size_t count;
+    size_t capacity;
+} Scopes;
+static Scopes scopes = {0};
+static void push_new_scope(void)
+{
+    Scope *scope = calloc(1, sizeof(Scope));
+    scope->is_global = scopes.count == 0;
+    scope->outer = scopes.current;
+    scope->depth = scope->outer ? scope->outer->depth + 1 : 0;
+    da_push(&scopes, scope);
+    scopes.current = *da_get_last(scopes);
+}
+static inline Scope *pop_scope(void)
+{
+    Scope *popped = scopes.current;
+    scopes.current = popped->outer;
+    return popped;
+}
+
 typedef enum
 {
     SYM_VARIABLE,
     SYM_FUNCTION,
-    SYM_TYPE,
+    SYM_STRUCT,
 
     __symbol_kinds_count
 } SymbolKind;
-
-char *symbol_kind_as_string(SymbolKind kind)
-{
-    switch (kind) {
-    case SYM_VARIABLE: return "Variable";
-    case SYM_FUNCTION: return "Function";
-    case SYM_TYPE:     return "Type";
-    default: unreachableln("SymbolKind %u in symbol_kind_as_string", kind); exit(1);
-    }
-}
+typedef SymbolKind DeclarationKind;
 
 struct Symbol
 {
@@ -1130,6 +1162,7 @@ struct Symbol
     Location loc;
     char prefix[64];
     char name[64];
+    Scope *scope;
     union {
         struct { // SYM_VARIABLE
             bool initialized;
@@ -1137,7 +1170,7 @@ struct Symbol
         struct { // SYM_FUNCTION
             Symbols params;
         } fn;
-        struct { // SYM_TYPE - struct
+        struct { // SYM_STRUCT
             Symbols members;
             bool is_generic;
             Symbols params;
@@ -1145,51 +1178,23 @@ struct Symbol
     };
 };
 
-Symbol *create_symbol(SymbolKind kind, const char *prefix, const char *name, Location loc)
+typedef Symbols FunctionStack;
+static FunctionStack function_stack = {0};
+static inline void push_current_function(Symbol *fn) { da_push(&function_stack, fn); }
+static inline Symbol *pop_current_function(void) { return da_pop(&function_stack); }
+static inline Symbol *get_current_function(void)
 {
-    Symbol *sym = calloc(1, sizeof(Symbol));
-    assert(sym);
-
-    sym->kind = kind;
-    sym->loc = loc;
-    if (prefix) strcpy(sym->prefix, prefix);
-    strcpy(sym->name, name);
-    return sym;
+    return function_stack.count > 0 ? *da_get_last(function_stack) : NULL;
 }
-static inline Symbol *create_symbol_from_token(SymbolKind kind, Token *token)
-{
-    return create_symbol(kind, NULL, token->lexeme, token->loc);
-}
-static inline Symbol *create_symbol_from_token_with_prefix(SymbolKind kind, Token *token, const char *prefix)
-{
-    return create_symbol(kind, prefix, token->lexeme, token->loc);
-}
-
-typedef struct
-{
-    Symbols symbols;
-} Scope;
-
-typedef struct
-{
-    Scope *items;
-    size_t count;
-    size_t capacity;
-} Scopes;
-static Scopes scopes = {0};
-static inline void push_scope(Scope scope) { da_push(&scopes, scope); }
-static inline void push_new_scope(void) { push_scope((Scope){0}); }
-static inline Scope pop_scope(void) { return da_pop(&scopes); }
-static inline Scope *get_global_scope(void) { return &scopes.items[0]; }
-static inline bool in_global_scope(void) { return scopes.count == 1; }
 
 void dump_symbols(void)
 {
     debugln("Dumping symbols:");
     for (size_t scope_i = 0; scope_i < scopes.count; scope_i++) {
-            debugln("  %zu:", scope_i);
-        for (size_t sym_i = 0; sym_i < scopes.items[scope_i].symbols.count; sym_i++) {
-            debugln("    - %s", scopes.items[scope_i].symbols.items[sym_i]->name);
+        Scope *scope = scopes.items[scope_i];
+        debugln("%zu:", scope->depth);
+        for (size_t sym_i = 0; sym_i < scope->symbols.count; sym_i++) {
+            debugln("- %s", scope->symbols.items[sym_i]->name);
         }
     }
 }
@@ -1222,35 +1227,14 @@ static TypeInfo *_types_main_fn[MAIN_FN_ALTERNATIVES] = {0};
 
 Symbol *get_symbol(char *name)
 {
-    int i = scopes.count-1;
-    while (i >= 0) {
-        Symbols *symbols = &scopes.items[i].symbols;
-        for (size_t j = 0; j < symbols->count; j++) {
-            Symbol *sym = symbols->items[j];
+    for (Scope *scope = scopes.current; scope; scope = scope->outer) {
+        for (size_t sym_i = 0; sym_i < scope->symbols.count; sym_i++) {
+            Symbol *sym = scope->symbols.items[sym_i];
             if (streq(name, sym->name)) return sym;
         }
-        i--;
     }
     return NULL;
 }
-
-Symbol *_get_symbol(const char *name, SymbolKind kind)
-{
-    int i = scopes.count-1;
-    while (i >= 0) {
-        Symbols *symbols = &scopes.items[i].symbols;
-        for (size_t j = 0; j < symbols->count; j++) {
-            Symbol *sym = symbols->items[j];
-            if (sym->kind == kind && streq(name, sym->name)) return sym;
-        }
-        i--;
-    }
-    return NULL;
-}
-
-static inline Symbol *get_variable_symbol(const char *name) { return _get_symbol(name, SYM_VARIABLE); }
-static inline Symbol *get_function_symbol(const char *name) { return _get_symbol(name, SYM_FUNCTION); }
-static inline Symbol *get_type_symbol(const char *name) { return _get_symbol(name, SYM_TYPE); }
 
 typedef struct ASTNode
 {
@@ -1281,12 +1265,11 @@ typedef struct ASTNode
         } conditional; // IF, ELIF, WHILE
         ASTNode *statements; // BLOCK
         struct {
-            size_t size;
-            TypeInfo *of;
+            ASTNode *of;
+            ASTNode *size;
             ASTNode *head;
         } array; // ARRAY_LITERAL
         struct {
-            ASTNode *fn;
             ASTNode *expr;
         } ret; // RETURN
         ASTNode *accessed_struct; //MEMBER_ACCESS,
@@ -1300,23 +1283,24 @@ typedef struct ASTNode
             bool is_init;
         } assign; // ASSIGNMENT
         struct {
+            DeclarationKind kind;
             Symbol *sym;
             union {
                 struct {
-                    ASTNode *init; // it's an ASSIGNMENT node where lhs is DECLARATION node and rhs is expr
+                    ASTNode *type;
+                    ASTNode *init; // ASSIGNMENT node where lhs is DECLARATION node and rhs is expr
                 } var;
                 struct {
                     ASTNode *params;
                     ASTNode *block;
                     ASTNode *ret;
+                    bool is_method;
+                    bool is_static_method;
                 } fn;
                 struct {
                     ASTNode *members;
-
                     bool is_generic;
                     ASTNode *params;
-                    ASTNode *template;
-                    ASTNode *instance_of;
                 } strct;
             };
         } decl; // DECLARATION
@@ -1462,17 +1446,6 @@ PrimitiveType primitive_type_from_string(const char *type_string)
     else                                                                     return PRIMITIVE_UNKNOWN;
 }
 
-TypeInfo *get_type(const char *name)
-{
-    PrimitiveType prim_type = primitive_type_from_string(name); 
-    if (prim_type != PRIMITIVE_UNKNOWN) return primitive_type(prim_type);
-
-    Symbol *named_type = get_type_symbol(name);
-    if (named_type) return named_type->type;
-
-    return create_type(KIND_NOT_DECLARED, name);
-}
-
 void parse_generic_type(Parser *parser, TypeInfo *type)
 {
     if (type->kind != KIND_STRUCT && !type->strct.is_generic) {
@@ -1489,59 +1462,10 @@ void parse_generic_type(Parser *parser, TypeInfo *type)
     parser_expect(parser, TOK_GREATER_THAN);
 }
 
-static_assert(__kinds_count == 10, "Cover all kinds in parse_type");
-TypeInfo *parse_type(Parser *parser)
-{
-    if (current_token->type == TOK_ANY) { // KIND_ANY
-        return any_type();
-    } else if (current_token->type == TOK_IDENT) { // KIND_PRIMITIVE, KIND_STRUCT
-        TypeInfo *type;
-        if (streq(current_token->lexeme, "Type")) {
-            type = type_type();
-        } else {
-            type = get_type(current_token->lexeme);
-        }
-        parser_advance(parser); // type
-        if (current_token->type == TOK_LESS_THAN) {
-            parse_generic_type(parser, type);
-        }
-        return type;
-    } else if (current_token->type == TOK_L_SQPAREN) { // KIND_ARRAY
-        TypeInfo *array_type = create_type_without_name(KIND_ARRAY);
-        parser_advance(parser); // "["
-        array_type->array.of = parse_type(parser);
-
-        if (current_token->type == TOK_COMMA) { // array
-            parser_advance(parser); // ","
-            Token *size_token = parser_expect(parser, TOK_NUMBER);
-            array_type->array.size = atoi(size_token->lexeme); // TODO: I should parse an expression and then type check it and see if it's uint
-        }
-        
-        parser_expect(parser, TOK_R_SQPAREN);
-        return array_type;
-    } else if (current_token->type == TOK_L_PAREN) { // KIND_FUNCTION
-        todoln("Parse function type");
-        exit(1);
-    } else if (current_token->type == TOK_HAT) { // KIND_POINTER
-        TypeInfo *pointer_type = create_type_without_name(KIND_POINTER);
-        parser_advance(parser); // "^"
-        pointer_type->ptr.to = parse_type(parser);
-        return pointer_type;
-    } else {
-        loc_print(current_token->loc);
-        error("Expecting a type, but got ");
-        token_print(current_token);
-        printf("\n");
-        exit(1);
-    }
-}
-
 ASTNode *parse_statement(Parser *parser);
 
 ASTNode *parse_block(Parser *parser)
 {
-    push_new_scope();
-    
     parser_advance(parser); // '{'
 
     ASTNode *node = create_node_without_name(ASTNODE_BLOCK, current_token->loc);
@@ -1561,63 +1485,36 @@ ASTNode *parse_block(Parser *parser)
 
 ret:
     parser_expect(parser, TOK_R_CUPAREN);
-    pop_scope();
 
     return node;
 }
 
 static inline ASTNode *parse_declaration(Parser *parser);
-void _parse_function_declaration(Parser *parser, ASTNode *node, Symbol *sym, const char *prefix)
+void _parse_function_declaration(Parser *parser, ASTNode *node, const char *prefix)
 {
-    sym->type = create_type(KIND_FUNCTION, sym->name);
-    sym->fn.params = (Symbols){0};
-    sym->type->fn.params = (TypeInfos){0};
-
-    push_function(parser, node);
-
     parser_expect(parser, TOK_L_PAREN);
 
     ASTNode **next_param = &node->decl.fn.params;
-    Symbols params_symbols = {0};
-    TypeInfos params_types = {0};
 
     bool done = false;
     if (prefix) {
-        sym->type->fn.is_method = true;
-        if (!streq(current_token->lexeme, "self")) {
-            sym->type->fn.is_static = true;
-        } else {
+        node->decl.fn.is_method = true;
+        if (streq(current_token->lexeme, "self")) {
             ASTNode *self_node = create_node_from_token(ASTNODE_DECLARATION, current_token);
-            Symbol *self_sym = create_symbol_from_token(SYM_VARIABLE, current_token);
-            self_sym->type = get_type(prefix);
-
-            da_push(&params_symbols, self_sym);
-            da_push(&params_types, self_sym->type);
-
-            self_node->decl.sym = self_sym;
             *next_param = self_node;
             next_param = &self_node->next;
 
             parser_advance(parser); // "self"
             if (current_token->type == TOK_R_PAREN) done = true;
             else parser_expect(parser, TOK_COMMA);
+        } else {
+            node->decl.fn.is_static_method = true;
         }
     }
 
     while (current_token->type != TOK_R_PAREN && !done) {
         ASTNode *param = parse_declaration(parser);
-
-        if (param->decl.sym->kind != SYM_VARIABLE) {
-            loc_print(param->loc);
-            error("Cannot declare %s as function parameter, only variables are allowed",
-                    symbol_kind_as_string(param->decl.sym->kind));
-            exit(1);
-        }
-
-        da_push(&params_symbols, param->decl.sym);
-        da_push(&params_types, param->decl.sym->type);
         *next_param = param;
-
         next_param = &param->next;
 
         if (current_token->type == TOK_R_PAREN) break;
@@ -1630,16 +1527,12 @@ void _parse_function_declaration(Parser *parser, ASTNode *node, Symbol *sym, con
             exit(1);
         }
     }
-    sym->fn.params = params_symbols;
-    sym->type->fn.params = params_types;
 
     parser_expect(parser, TOK_R_PAREN);
 
     if (current_token->type == TOK_ARROW) {
         parser_advance(parser); // "->"
-        sym->type->fn.ret_type = parse_type(parser);
-    } else {
-        sym->type->fn.ret_type = primitive_type(PRIMITIVE_VOID);
+        node->decl.fn.ret = parse_expression(parser);
     }
 
     parser_expect(parser, TOK_EQUALS);
@@ -1647,57 +1540,35 @@ void _parse_function_declaration(Parser *parser, ASTNode *node, Symbol *sym, con
     // TODO: maybe if current != { we can parse a single statement, like in if, but at least here we got = to divide
     // TODO: functions with a single return statement (params) => expr (can be inferred) (used also for lambdas)
     node->decl.fn.block = parse_block(parser);
-
-    pop_function(parser);
 }
 
 static inline ASTNode *parse_declaration_statement_with_prefix(Parser *parser, const char *prefix);
-void _parse_struct_declaration(Parser *parser, ASTNode *node, Symbol *sym)
+void _parse_struct_declaration(Parser *parser, ASTNode *node)
 {
-    sym->type = create_type(KIND_STRUCT, sym->name);
-    sym->strct.params = (Symbols){0};
-    sym->type->strct.params = (TypeInfos){0};
-    sym->strct.members = (Symbols){0};
-    sym->type->strct.members = (Symbols){0};
-    
     parser_advance(parser); // "struct"
 
     if (current_token->type == TOK_LESS_THAN) { // struct is generic
         parser_advance(parser); // "<"
-        sym->strct.is_generic = true;
-        sym->type->strct.is_generic = true;
+        node->decl.strct.is_generic = true;
 
         ASTNode **next_param = &node->decl.strct.params;
-        Symbols params_symbols = {0};
-        TypeInfos params_types = {0};
 
         while (current_token->type != TOK_GREATER_THAN) {
             ASTNode *param = parse_declaration(parser);
-
-            if (param->decl.sym->type->kind == KIND_TYPE) {
-                param->decl.sym->kind = SYM_TYPE;
-                param->decl.sym->type = create_type(KIND_GENERIC, param->decl.sym->name);
-            }
-
-            da_push(&params_symbols, param->decl.sym);
-            da_push(&params_types, param->decl.sym->type);
 
             *next_param = param;
             next_param = &param->next;
             
             if (current_token->type == TOK_COMMA) parser_advance(parser); // ","
+            else if (current_token->type != TOK_GREATER_THAN) {
+                loc_print(current_token->loc);
+                error("Expected ',' or '>' in generic parameter list, but got ");
+                token_print(current_token);
+                printf("\n");
+                exit(1);
+            }
         }
         parser_advance(parser); // ">"
-
-        sym->strct.params = params_symbols;
-        sym->type->strct.params = params_types;
-
-        debugln("Generic struct has %zu parameters:", params_symbols.count);
-        for (size_t i = 0; i < params_symbols.count; i++) {
-            debug("- %s: ", params_symbols.items[i]->name);
-            type_print(params_types.items[i]);
-            printf("\n");
-        }
     }
 
     parser_expect(parser, TOK_EQUALS);
@@ -1705,78 +1576,69 @@ void _parse_struct_declaration(Parser *parser, ASTNode *node, Symbol *sym)
     parser_expect(parser, TOK_L_CUPAREN);
 
     ASTNode **next_member = &node->decl.strct.members;
-    Symbols members = {0};
-    push_new_scope(); {
-        while (current_token->type != TOK_R_CUPAREN) {
-            ASTNode *member = parse_declaration_statement_with_prefix(parser, sym->name);
-            da_push(&members, member->decl.sym);
-            *next_member = member;
-            next_member = &member->next;
-        }
-        parser_expect(parser, TOK_R_CUPAREN);
-    } pop_scope();
-
-    sym->strct.members = members;
-    sym->type->strct.members = members;
+    while (current_token->type != TOK_R_CUPAREN) {
+        ASTNode *member = parse_declaration_statement_with_prefix(parser, node->name);
+        *next_member = member;
+        next_member = &member->next;
+    }
+    parser_expect(parser, TOK_R_CUPAREN);
 }
 
-ASTNode *_parse_variable_declaration(Parser *parser, Symbol *sym)
+// a : uint     ;
+// b : uint = 3 ;
+// c :      = 3 ;
+
+void _parse_variable_declaration(Parser *parser, ASTNode *node)
 {
-    if (current_token->type == TOK_EQUALS) {
-        sym->type = create_type_without_name(KIND_NOT_INFERRED);
-    } else {
-        sym->type = parse_type(parser);
-    }
-
-    ASTNode *var_init_expr = NULL;
-
-    if (current_token->type == TOK_EQUALS) {
-        parser_advance(parser); // "="
-        sym->var.initialized = true;
-        var_init_expr = parse_expression(parser);
-        if (!var_init_expr) {
+    if (current_token->type != TOK_EQUALS) {
+        node->decl.var.type = parse_expression(parser);
+        if (!node->decl.var.type) {
             loc_print(current_token->loc);
-            error("Expected expression in variable declaration, but got ");
+            error("Expecting type expression in variable declaration, but got ");
             token_print(current_token);
             printf("\n");
             exit(1);
         }
     }
 
-    return var_init_expr;
+    if (current_token->type == TOK_EQUALS) {
+        parser_advance(parser); // "="
+        ASTNode *var_init_expr = parse_expression(parser);
+        if (!var_init_expr) {
+            loc_print(current_token->loc);
+            error("Expected expression in variable initialization, but got ");
+            token_print(current_token);
+            printf("\n");
+            exit(1);
+        }
+        ASTNode *lhs = create_node(ASTNODE_IDENT, node->name, node->loc);
+        ASTNode *assign = create_node_without_name(ASTNODE_ASSIGNMENT, var_init_expr->loc);
+        assign->assign.lhs = lhs;
+        assign->assign.rhs = var_init_expr;
+        assign->assign.is_init = true;
+        node->decl.var.init = assign;
+    }
 }
 
 ASTNode *_parse_declaration(Parser *parser, bool is_statement, const char *prefix)
 {
     ASTNode *node = create_node_from_token(ASTNODE_DECLARATION, current_token);
-    Symbol *sym = create_symbol_from_token_with_prefix(SYM_VARIABLE, current_token, prefix);
 
-    parser_advance(parser); // symbol name
+    parser_advance(parser); // name
     parser_expect(parser, TOK_COLON);
 
     if (current_token->type == TOK_STRUCT) {
-        sym->kind = SYM_TYPE;
-        _parse_struct_declaration(parser, node, sym);
+        node->decl.kind = SYM_STRUCT;
+        _parse_struct_declaration(parser, node);
     } else if (current_token->type == TOK_L_PAREN) {
-        sym->kind = SYM_FUNCTION;
-        _parse_function_declaration(parser, node, sym, prefix);
+        node->decl.kind = SYM_FUNCTION;
+        _parse_function_declaration(parser, node, prefix);
     } else {
-        ASTNode *var_init_expr = _parse_variable_declaration(parser, sym);
-        if (var_init_expr) {
-            ASTNode *lhs = create_node(ASTNODE_IDENT, sym->name, node->loc);
-            lhs->ident = sym;
-
-            ASTNode *assign = create_node_without_name(ASTNODE_ASSIGNMENT, var_init_expr->loc);
-            assign->assign.lhs = lhs;
-            assign->assign.rhs = var_init_expr;
-            assign->assign.is_init = true;
-
-            node->decl.var.init = assign;
-        }
+        node->decl.kind = SYM_VARIABLE;
+        _parse_variable_declaration(parser, node);
         if (is_statement) parser_expect(parser, TOK_SEMICOLON);
     }
 
-    node->decl.sym = sym;
     return node;
 }
 static inline ASTNode *parse_declaration_statement(Parser *parser) { return _parse_declaration(parser, true, NULL); } 
@@ -1902,25 +1764,14 @@ ASTNode *parse_for(Parser *parser)
 
 ASTNode *parse_return(Parser *parser)
 {
-    if (da_is_empty(&parser->functions_stack)) {
-        loc_print(current_token->loc);
-        errorln("Unexpected return outside of function");
-        exit(1);
-    }
-
     ASTNode *node = create_node_from_token(ASTNODE_RETURN, current_token);
-    node->ret.fn = current_function(parser);
 
     parser_advance(parser); // "return"
 
     if (current_token->type != TOK_SEMICOLON) {
         node->ret.expr = parse_expression(parser);
-        if (node->ret.expr) {
-            node->ret.fn->decl.fn.ret = node;
-        }
     }
     parser_expect(parser, TOK_SEMICOLON);
-
 
     return node;
 }
@@ -2028,26 +1879,22 @@ size_t node_list_length(ASTNode *list)
     return len;
 }
 
-ASTNode *parse_array_literal(Parser *parser)
+ASTNode *parse_sqparen_prefix(Parser *parser)
 {
     parser_expect(parser, TOK_L_SQPAREN);
 
     ASTNode *node = create_node_without_name(ASTNODE_ARRAY_LITERAL, current_token->loc);
     node->array.head = parse_expression_list(parser);
 
-    size_t size = node_list_length(node->array.head);
-    node->array.size = size;
-    node->array.of = create_type_without_name(size > 0 ? KIND_NOT_DECLARED : KIND_NOT_INFERRED);
-
     parser_expect(parser, TOK_R_SQPAREN);
 
     return node;
 }
 
-ASTNode *parse_address_of(Parser *parser)
+ASTNode *parse_hat_operator(Parser *parser)
 {
     ASTNode *node = create_node_from_token(ASTNODE_UNARY, current_token);
-    node->unary.operator = OP_ADDRESS_OF;
+    node->unary.operator = OP_POINTER_TO;
     parser_advance(parser); // "^"
     node->unary.operand = parse_expression(parser);
     if (!node->unary.operand) {
@@ -2057,7 +1904,7 @@ ASTNode *parse_address_of(Parser *parser)
     return node;
 }
 
-static_assert(__tok_types_count == 32, "Cover all token types in expression_rules table");
+static_assert(__tok_types_count == 33, "Cover all token types in expression_rules table");
 ExprRule expression_rules[__tok_types_count] = {
     // No expression rules related to these tokens
     [TOK_IF]         = {NULL, NULL, PREC_NONE},
@@ -2067,7 +1914,6 @@ ExprRule expression_rules[__tok_types_count] = {
     [TOK_FOR]        = {NULL, NULL, PREC_NONE},
     [TOK_RETURN]     = {NULL, NULL, PREC_NONE},
     [TOK_STRUCT]     = {NULL, NULL, PREC_NONE},
-    [TOK_ANY]        = {NULL, NULL, PREC_NONE},
     [TOK_R_PAREN]    = {NULL, NULL, PREC_NONE},
     [TOK_R_SQPAREN]  = {NULL, NULL, PREC_NONE},
     [TOK_L_CUPAREN]  = {NULL, NULL, PREC_NONE},
@@ -2080,12 +1926,14 @@ ExprRule expression_rules[__tok_types_count] = {
     [TOK_EOF]        = {NULL, NULL, PREC_NONE},
 
     // Primaries
-    [TOK_IDENT]     = {parse_ident,         NULL, PREC_NONE},
-    [TOK_NUMBER]    = {parse_number,        NULL, PREC_NONE},
-    [TOK_STRING]    = {parse_string,        NULL, PREC_NONE},
-    [TOK_TRUE]      = {parse_true,          NULL, PREC_NONE},
-    [TOK_FALSE]     = {parse_false,         NULL, PREC_NONE},
-    [TOK_L_SQPAREN] = {parse_array_literal, NULL, PREC_NONE}, // TODO: what prec?
+    [TOK_ANY]       = {parse_ident, NULL, PREC_NONE},
+    [TOK_TYPE]      = {parse_ident, NULL, PREC_NONE},
+    [TOK_IDENT]     = {parse_ident, NULL, PREC_NONE},
+    [TOK_NUMBER]    = {parse_number,         NULL, PREC_NONE},
+    [TOK_STRING]    = {parse_string,         NULL, PREC_NONE},
+    [TOK_TRUE]      = {parse_true,           NULL, PREC_NONE},
+    [TOK_FALSE]     = {parse_false,          NULL, PREC_NONE},
+    [TOK_L_SQPAREN] = {parse_sqparen_prefix, NULL, PREC_NONE}, // TODO: what prec?
 
     // Arithmetic operators
     [TOK_PLUS] = {NULL, parse_binary, PREC_TERM},
@@ -2097,23 +1945,16 @@ ExprRule expression_rules[__tok_types_count] = {
     [TOK_GREATER_THAN]  = {NULL, parse_binary, PREC_TERM},
 
     // Grouping and others
-    [TOK_L_PAREN] = {parse_grouping,   parse_call_infix,   PREC_CALL},
-    [TOK_DOT]     = {NULL,             parse_dot_operator, PREC_CALL},
-    [TOK_HAT]     = {parse_address_of, NULL,               PREC_UNARY},
+    [TOK_L_PAREN] = {parse_grouping,     parse_call_infix,   PREC_CALL},
+    [TOK_DOT]     = {NULL,               parse_dot_operator, PREC_CALL},
+    [TOK_HAT]     = {parse_hat_operator, NULL,               PREC_UNARY},
 };
 
-static_assert(__tok_types_count == 32, "Cover all token types in parse_statement");
+static_assert(__tok_types_count == 33, "Cover all token types in parse_statement");
 static_assert(__astnode_types_count == 20, "Cover all ast node types in parsing");
 ASTNode *parse_statement(Parser *parser)
 {
     Token *token = current_token;
-
-    if (in_global_scope() && !(token->type == TOK_IDENT && parser_peek(parser)->type == TOK_COLON)) {
-        // TODO: report this error with some sense
-        loc_print(token->loc);
-        errorln("Only declarations are allowed at top level");
-        exit(1);
-    }
 
     switch (token->type) {
         case TOK_IF:        return parse_if(parser);
@@ -2155,14 +1996,356 @@ ASTNode *parse_program(Parser *parser)
     ASTNode *ast = create_node_without_name(ASTNODE_PROGRAM, current_token->loc);
     ASTNode *node = ast;
 
-    push_new_scope(); // global scope
-
     while (current_token->type != TOK_EOF) {
         node->next = parse_statement(parser);
         if (node->next) node = node->next;
     }
     
     return ast;
+}
+
+static void register_symbol(Symbol *sym)
+{
+    Scope *scope = scopes.current;
+    sym->scope = scope;
+    da_push(&scope->symbols, sym);
+}
+
+TypeInfo *resolve_type_expression(ASTNode *expr)
+{
+    if (!expr) return primitive_type(PRIMITIVE_VOID);
+
+    switch (expr->type) {
+    case ASTNODE_IDENT: {
+        PrimitiveType prim = primitive_type_from_string(expr->name);
+        if (prim != PRIMITIVE_UNKNOWN) return primitive_type(prim);
+
+        Symbol *struct_sym = expr->ident;
+        //Symbol *struct_sym = get_struct_symbol(expr->name); // TODO
+        if (struct_sym) return struct_sym->type;
+
+        loc_print(expr->loc);
+        errorln("Unknown type '%s'", expr->name);
+        exit(1);
+    }
+
+    case ASTNODE_UNARY: {
+        if (expr->unary.operator != OP_POINTER_TO) {
+            loc_print(expr->loc);
+            error("Invalid unary operator '%s' in type expression\n", operator_as_string(expr->unary.operator));
+            exit(1);
+        }
+
+        TypeInfo *base = resolve_type_expression(expr->unary.operand);
+        TypeInfo *ptr = create_type_without_name(KIND_POINTER);
+        ptr->ptr.to = base;
+        return ptr;
+    }
+
+    case ASTNODE_ARRAY_LITERAL: {
+        ASTNode *head = expr->array.head;
+        size_t len = node_list_length(expr->array.head);
+        if (len != 1 && len != 2) {
+            loc_print(expr->loc);
+            errorln("Array type '[T, N]' must contain only one type expression and one optional arithmetic expression");
+            exit(1);
+        }
+
+        TypeInfo *elt = resolve_type_expression(head);
+        size_t size = 0;
+        if (len == 2) {
+            todoln("Check array size expression type"); // but maybe later?
+        }
+        TypeInfo *arr = create_type_without_name(KIND_ARRAY);
+        arr->array.of = elt;
+        arr->array.size = size;
+        return arr;
+    }
+
+    default:
+        loc_print(expr->loc);
+        error("Invalid AST node of type %d used as a type expression\n", expr->type);
+        exit(1);
+    }
+}
+
+Symbol *create_symbol(SymbolKind kind, const char *prefix, const char *name, Location loc)
+{
+    Symbol *sym = calloc(1, sizeof(Symbol));
+    assert(sym);
+
+    sym->kind = kind;
+    sym->loc = loc;
+    if (prefix) strcpy(sym->prefix, prefix);
+    strcpy(sym->name, name);
+    return sym;
+}
+static inline Symbol *create_declaration_symbol_with_prefix(ASTNode *node, const char *prefix)
+{
+    return create_symbol(node->decl.kind, prefix, node->name, node->loc);
+}
+static inline Symbol *create_declaration_symbol(ASTNode *node)
+{
+    return create_declaration_symbol_with_prefix(node, NULL);
+}
+
+void create_types_and_functions_definitions_in_scope(ASTNode *root, const char *prefix)
+{
+    ASTNode *current = root;
+    while (current) {
+        if (current->type != ASTNODE_DECLARATION || current->decl.kind == SYM_VARIABLE) {
+            current = current->next;
+            continue;
+        }
+
+        current->decl.sym = create_declaration_symbol_with_prefix(current, prefix);
+
+        Symbol *sym = current->decl.sym;
+        Symbol *other = get_symbol(sym->name);
+        if (other) {
+            loc_print(current->loc);
+            errorln("Redeclaration of symbol '%s'", sym->name);
+            loc_print(other->loc);
+            noteln("First declared here");
+            exit(1);
+        }
+        register_symbol(sym);
+
+        if (sym->kind == SYM_FUNCTION) {
+            ASTNode *fn_decl = current;
+
+            TypeInfo *fn_type = create_type(KIND_FUNCTION, sym->name);
+            sym->type = fn_type;
+
+            ASTNode *param_node = fn_decl->decl.fn.params;
+            while (param_node) {
+                param_node->decl.sym = create_declaration_symbol(param_node);
+                Symbol *param_sym = param_node->decl.sym;
+
+                if (param_node->decl.var.type) {
+                    TypeInfo *param_type = resolve_type_expression(param_node->decl.var.type);
+                    param_sym->type = param_type;
+                    da_push(&fn_type->fn.params, param_type);
+                } else {
+                    // TODO: for now, then infer
+                    loc_print(param_node->loc);
+                    errorln("Parameter '%s' must have an explicit type", param_sym->name);
+                    exit(1);
+                }
+
+                param_node = param_node->next;
+            }
+
+            ASTNode *fn_ret = fn_decl->decl.fn.ret;
+            fn_type->fn.ret_type = fn_ret ? resolve_type_expression(fn_ret) : primitive_type(PRIMITIVE_VOID);
+        } else if (sym->kind == SYM_STRUCT) {
+            todoln("Create struct definition for '%s'", sym->name);
+            exit(1);
+        }
+
+        current = current->next;
+    }
+}
+
+static void bind_expression(ASTNode *expr)
+{
+    if (!expr) return;
+
+    switch (expr->type) {
+    case ASTNODE_IDENT: {
+        Symbol *sym = get_symbol(expr->name);
+        if (!sym) {
+            loc_print(expr->loc);
+            errorln("Identifier '%s' is not declared", expr->name);
+            exit(1);
+        }
+        expr->ident = sym;
+    } break;
+
+    case ASTNODE_CALL:
+    case ASTNODE_CALL_STATEMENT: {
+        bind_expression(expr->call.callee);
+        ASTNode *arg = expr->call.args;
+        while (arg) {
+            bind_expression(arg);
+            arg = arg->next;
+        }
+    } break;
+
+    case ASTNODE_MEMBER_ACCESS:
+        bind_expression(expr->accessed_struct);
+        break;
+
+    case ASTNODE_UNARY:
+        bind_expression(expr->unary.operand);
+        break;
+
+    case ASTNODE_BINOP:
+        bind_expression(expr->binary.left);
+        bind_expression(expr->binary.right);
+        break;
+
+    case ASTNODE_ARRAY_LITERAL: {
+        ASTNode *elt = expr->array.head;
+        while (elt) {
+            bind_expression(elt);
+            elt = elt->next;
+        }
+    } break;
+
+    default: break;
+    }
+}
+
+static void bind_declaration(ASTNode *node);
+static void bind_declaration_with_prefix(ASTNode *node, const char *prefix);
+static void bind_declaration_list(ASTNode *list);
+static void bind_declaration_list_with_prefix(ASTNode *list, const char *prefix);
+
+static void bind_struct_declaration(ASTNode *node)
+{
+    push_new_scope();
+
+    ASTNode *p = node->decl.strct.params;
+    while (p) {
+        bind_declaration(p);
+        da_push(&node->decl.sym->strct.params, p->decl.sym);
+        p = p->next;
+    }
+
+    ASTNode *m = node->decl.strct.members;
+    while (m) {
+        bind_declaration_with_prefix(m, node->name);
+        da_push(&node->decl.sym->strct.members, m->decl.sym);
+        m = m->next;
+    }
+
+    bind_declaration_list(node->decl.strct.params);
+    bind_declaration_list_with_prefix(node->decl.strct.members, node->name);
+
+    pop_scope();
+}
+
+static void bind_function_declaration(ASTNode *node) {
+    push_new_scope();
+
+    ASTNode *p = node->decl.fn.params;
+    while (p) {
+        bind_declaration(p);
+        da_push(&node->decl.sym->fn.params, p->decl.sym);
+        p = p->next;
+    }
+
+    bind_declaration_list(node->decl.fn.block);
+
+    pop_scope();
+}
+
+static void bind_variable_declaration(ASTNode *node, const char *prefix)
+{
+    node->decl.sym = create_declaration_symbol_with_prefix(node, prefix);
+
+    Symbol *other = get_symbol(node->decl.sym->name);
+    if (other) {
+        loc_print(node->loc);
+        errorln("Redeclaration of variable '%s'", node->decl.sym->name);
+        loc_print(other->loc);
+        noteln("Firs declared here");
+        exit(1);
+    }
+    register_symbol(node->decl.sym);
+
+    if (node->decl.var.init) {
+        bind_expression(node->decl.var.init);
+    }
+}
+
+static void bind_declaration_with_prefix(ASTNode *node, const char *prefix)
+{
+    assert(node->type == ASTNODE_DECLARATION);
+
+    switch (node->decl.kind) {
+    case SYM_VARIABLE: bind_variable_declaration(node, prefix); break;
+    case SYM_FUNCTION: bind_function_declaration(node); break;
+    case SYM_STRUCT:   bind_struct_declaration(node); break;
+    default:
+        unreachableln("DeclarationKind %u in bind_declaration", node->decl.kind);
+        exit(1);
+    }
+}
+static inline void bind_declaration(ASTNode *node) { bind_declaration_with_prefix(node, NULL); }
+
+static void bind_declaration_list_with_prefix(ASTNode *list, const char *prefix)
+{
+    ASTNode *current = list;
+    while (current) {
+        switch (current->type) {
+        case ASTNODE_DECLARATION: {
+            bind_declaration_with_prefix(current, prefix);
+
+            if (current->decl.kind == SYM_VARIABLE && current->decl.var.init) {
+                bind_expression(current->decl.var.init->assign.lhs);
+                bind_expression(current->decl.var.init->assign.rhs);
+            }
+        } break;
+
+        case ASTNODE_ASSIGNMENT:
+            bind_expression(current->assign.lhs);
+            bind_expression(current->assign.rhs);
+            break;
+
+        case ASTNODE_CALL:
+        case ASTNODE_CALL_STATEMENT:
+            bind_expression(current);
+            break;
+
+        case ASTNODE_RETURN:
+            if (current->ret.expr) bind_expression(current->ret.expr);
+            break;
+
+        case ASTNODE_BLOCK:
+            push_new_scope(); {
+                create_types_and_functions_definitions_in_scope(current->statements, prefix);
+                bind_declaration_list(current->statements);
+            } pop_scope();
+            break;
+
+        case ASTNODE_IF:
+        case ASTNODE_WHILE:
+            bind_expression(current->conditional.expr);
+            bind_declaration_list(current->conditional.block);
+            bind_declaration_list(current->conditional.list);
+            break;
+
+        case ASTNODE_ELIF:
+            bind_expression(current->conditional.expr);
+            bind_declaration_list(current->conditional.block);
+            bind_declaration_list(current->next);
+            break;
+
+        case ASTNODE_ELSE:
+            bind_declaration_list(current->conditional.block);
+            break;
+
+        default: break;
+        }
+
+        current = current->next;
+    }
+}
+static inline void bind_declaration_list(ASTNode *list) { bind_declaration_list_with_prefix(list, NULL); }
+
+void resolve_names(ASTNode *root) {
+    if (!root) return;
+    if (root->type != ASTNODE_PROGRAM) {
+        unreachableln("resolve_names must be called ");
+        exit(1);
+    }
+
+    push_new_scope(); { // global scope
+        create_types_and_functions_definitions_in_scope(root->next, NULL);
+        bind_declaration_list(root->next);
+    } pop_scope();
 }
 
 //void error_expected_token_type(TokenType expected, Token victim, Token from)
@@ -2310,8 +2493,7 @@ TypeInfo *node_type(ASTNode *node)
         exit(1);
     }
 
-    if (node->resolved_type && node->resolved_type->kind != KIND_NOT_INFERRED)
-        return node->resolved_type;
+    if (node->resolved_type) return node->resolved_type;
 
     TypeInfo *result_type = NULL;
 
@@ -2336,20 +2518,21 @@ TypeInfo *node_type(ASTNode *node)
     case ASTNODE_STRING: result_type = primitive_type(PRIMITIVE_STRING); break;
     case ASTNODE_BOOL:   result_type = primitive_type(PRIMITIVE_BOOL);   break;
     case ASTNODE_ARRAY_LITERAL: {
-        TypeInfo *array_type = create_type_without_name(KIND_ARRAY);
-        array_type->array.size = node->array.size;
-        array_type->array.of = node->array.of;
-        result_type = array_type;
+        todoln("line %u", __LINE__);
+        exit(1);
+        //TypeInfo *array_type = create_type_without_name(KIND_ARRAY);
+        //array_type->array.size = node->array.size;
+        //array_type->array.of = node->array.of;
+        //result_type = array_type;
     } break;
 
     case ASTNODE_IDENT: {
-        Symbol *sym = get_symbol(node->name);
-        if (!sym) {
-            loc_print(node->loc);
-            errorln("Identifier '%s' is not declared", node->name);
+        Symbol *sym = node->ident;
+        if (!sym->type || sym->type->kind == KIND_INVALID) {
+            loc_print(sym->loc);
+            unreachableln("Identifier '%s' has no valid type", sym->name);
             exit(1);
         }
-        node->ident = sym;
         result_type = sym->type;
     } break;
 
@@ -2358,9 +2541,9 @@ TypeInfo *node_type(ASTNode *node)
         exit(1);
     }
 
-    if (!result_type) {
+    if (!result_type || result_type->kind == KIND_INVALID) {
         loc_print(node->loc);
-        unreachableln("Node type = %d", node->type);
+        unreachableln("Node type = %d (%s)", node->type, node->name);
         unreachableln("Type could not be determined or it's invalid in type check");
         exit(1);
     }
@@ -2379,7 +2562,7 @@ TypeInfo *unary_type(ASTNode *node)
     //printf("\n");
 
     switch (node->unary.operator) {
-    case OP_ADDRESS_OF:
+    case OP_POINTER_TO:
         TypeInfo *pointer_type = create_type_without_name(KIND_POINTER);
         pointer_type->ptr.to = operand_type;
         return pointer_type;
@@ -2490,29 +2673,6 @@ void match_arguments(ASTNode *list, TypeInfo *type, Location fn_loc, Location ca
     }
 }
 
-static inline void register_symbol(Symbol *sym) { da_push(&da_get_last(scopes)->symbols, sym); }
-
-void register_scope_types_and_functions(ASTNode *root)
-{
-    ASTNode *current = root;
-    while (current) {
-        if (current->type != ASTNODE_DECLARATION || current->decl.sym->kind == SYM_VARIABLE) {
-            current = current->next;
-            continue;
-        }
-        Symbol *sym = get_symbol(current->decl.sym->name);
-        if (sym) {
-            loc_print(current->loc);
-            errorln("Redeclaration of name '%s'", current->decl.sym->name);
-            loc_print(sym->loc);
-            noteln("First declared here");
-            exit(1);
-        }
-        register_symbol(current->decl.sym);
-        current = current->next;
-    }
-}
-
 static_assert(__astnode_types_count == 20, "Cover all ast node types in type_check");
 void type_check(ASTNode *node)
 {
@@ -2521,128 +2681,63 @@ void type_check(ASTNode *node)
 
     switch (node->type) {
     case ASTNODE_PROGRAM: {
-        register_scope_types_and_functions(node->next);
-        Symbol *main_fn = get_function_symbol("main");
-        if (!main_fn) {
-            errorln("Entry point function 'main' is not declared");
-            exit(1);
-        } else {
-            bool ok = false;
-            for (int i = 0; i < MAIN_FN_ALTERNATIVES; i++) {
-                if (are_types_equal(main_fn->type, _types_main_fn[i])) {
-                    ok = true;
-                    break;
-                }
-            }
-            if (!ok) {
-                loc_print(node->loc);
-                errorln("Mismatched entry point function 'main' type declaration");
-                note("Got ");
-                type_print(main_fn->type);
-                printf("\n");
-                noteln("But expected one of these %u alternatives:", MAIN_FN_ALTERNATIVES);
-                for (int i = 0; i < MAIN_FN_ALTERNATIVES; i++) {
-                    note("%d: ", i+1);
-                    type_print(_types_main_fn[i]);
-                    printf("\n");
-                }
-                exit(1);
-            }
-        }
         type_check(node->next);
     } break;
 
     case ASTNODE_DECLARATION: {
-        switch (node->decl.sym->kind) {
+        Symbol *sym = node->decl.sym;
+        switch (sym->kind) {
         case SYM_VARIABLE: {
-            Symbol *other = get_symbol(node->decl.sym->name);
-            if (other && !streq(other->name, "self")) { // TODO: is this correct?
-                loc_print(node->loc);
-                errorln("Redeclaration of name '%s'", node->decl.sym->name);
-                loc_print(other->loc);
-                noteln("First declared here");
-                exit(1);
-            }
-            register_symbol(node->decl.sym);
-            
-            if (node->decl.sym->type->kind == KIND_NOT_INFERRED) {
-                free(node->decl.sym->type);
-                node->decl.sym->type = node_type(node->decl.var.init->assign.rhs);
-            }
-            if (node->decl.sym->type->kind == KIND_NOT_DECLARED) {
-                node->decl.sym->type = get_type(node->decl.sym->type->name);
-                if (node->decl.sym->type->kind == KIND_NOT_DECLARED) {
-                    loc_print(node->loc);
-                    errorln("Undeclared type '%s' for variable '%s'", node->decl.sym->type->name, node->name);
-                    exit(1);
-                }
+            if (node->decl.var.type) {
+                sym->type = resolve_type_expression(node->decl.var.type);
+            } else {
+                sym->type = node_type(node->decl.var.init->assign.rhs);
+                debug("Inferred type of '%s' -> '", node->decl.sym->name);
+                type_print(sym->type);
+                printf("'\n");
             }
 
-            if (node->decl.var.init) type_check(node->decl.var.init);
+            if (node->decl.var.init) {
+                type_check(node->decl.var.init);
+            }
         } break;
         case SYM_FUNCTION: {
-            push_new_scope();
+            push_current_function(sym);
 
             ASTNode *param_node = node->decl.fn.params;
             while (param_node) {
                 type_check(param_node);
                 param_node = param_node->next;
             }
-            for (size_t i = 0; i < node->decl.sym->fn.params.count; i++) {
-                Symbol *param = node->decl.sym->fn.params.items[i];
-                node->decl.sym->type->fn.params.items[i] = param->type;
-            }
-
-            TypeInfo *ret_type = node->decl.sym->type->fn.ret_type;
-            if (ret_type->kind == KIND_NOT_DECLARED) {
-                ret_type = get_type(ret_type->name); // TODO: is this correct?
-                if (ret_type->kind == KIND_NOT_DECLARED) {
-                    loc_print(node->loc);
-                    errorln("Undeclared return type '%s' for function '%s'", ret_type->name, node->name);
-                    exit(1);
-                }
-                node->decl.sym->type->fn.ret_type = ret_type;
-            }
 
             type_check(node->decl.fn.block);
-            pop_scope();
+
+            pop_current_function();
         } break;
-        case SYM_TYPE: {
-            if (node->decl.sym->type->kind == KIND_STRUCT) {
-                if (node->decl.sym->strct.is_generic) {
-                    push_new_scope();
-
-                    ASTNode *param_node = node->decl.strct.params;
-                    while (param_node) {
-                        type_check(param_node);
-                        param_node = param_node->next;
-                    }
-                    for (size_t i = 0; i < node->decl.sym->strct.params.count; i++) {
-                        Symbol *param = node->decl.sym->strct.params.items[i];
-                        node->decl.sym->type->strct.params.items[i] = param->type;
-                    }
+        case SYM_STRUCT: {
+            if (node->decl.strct.is_generic) {
+                ASTNode *param_node = node->decl.strct.params;
+                while (param_node) {
+                    type_check(param_node);
+                    param_node = param_node->next;
                 }
-
-                ASTNode *member_node = node->decl.strct.members;
-                while (member_node) {
-                    type_check(member_node);
-                    member_node = member_node->next;
+                for (size_t i = 0; i < node->decl.sym->strct.params.count; i++) {
+                    Symbol *param = node->decl.sym->strct.params.items[i];
+                    da_push(&sym->type->strct.params, param->type);
                 }
-                for (size_t i = 0; i < node->decl.sym->strct.members.count; i++) {
-                    Symbol *member = node->decl.sym->strct.members.items[i];
-                    node->decl.sym->type->strct.params.items[i] = member->type;
-                }
+            }
 
-                if (node->decl.strct.is_generic) pop_scope();
-            } else if (node->decl.sym->type->kind == KIND_GENERIC) {
-                todoln("Type check Generic Parameter %s", node->decl.sym->name);
-                exit(1);
-            } else {
-                todoln("Type check %s declaration node", kind_as_string(node->decl.sym->type->kind));
-                exit(1);
+            ASTNode *member_node = node->decl.strct.members;
+            while (member_node) {
+                type_check(member_node);
+                member_node = member_node->next;
+            }
+            for (size_t i = 0; i < sym->strct.members.count; i++) {
+                Symbol *member = sym->strct.members.items[i];
+                da_push(&sym->type->strct.members, member);
             }
         } break;
-        default: unreachableln("SymbolKind in declaration node in type_check"); exit(1);
+        default: unreachableln("SymbolKind %u in declaration node in type_check", sym->kind); exit(1);
         }
 
         type_check(node->next);
@@ -2653,18 +2748,20 @@ void type_check(ASTNode *node)
         TypeInfo *lhs_type = node_type(node->assign.lhs);
 
         if (lhs_type->kind == KIND_ARRAY) {
-            ASTNode *array_node = node->assign.rhs;
-            if (lhs_type->array.size > 0 && lhs_type->array.size != array_node->array.size) {
-                loc_print(node->loc);
-                // TODO: create a type from the array_node and use are_types_equal_with_errors
-                errorln("Assignment was expecting a array of size %zu, but got size %zu", lhs_type->array.size,
-                        array_node->array.size);
-                exit(1);
-            }
-            if (array_node->array.of->kind == KIND_NOT_INFERRED) {
-                array_node->array.of = lhs_type->array.of;
-            }
-            type_check(array_node); // populate array.of
+            todoln("%u", __LINE__);
+            exit(1);
+            //ASTNode *array_node = node->assign.rhs;
+            //if (lhs_type->array.size > 0 && lhs_type->array.size != array_node->array.size) {
+            //    loc_print(node->loc);
+            //    // TODO: create a type from the array_node and use are_types_equal_with_errors
+            //    errorln("Assignment was expecting a array of size %zu, but got size %zu", lhs_type->array.size,
+            //            array_node->array.size);
+            //    exit(1);
+            //}
+            //if (array_node->array.of->kind == KIND_NOT_INFERRED) {
+            //    array_node->array.of = lhs_type->array.of;
+            //}
+            //type_check(array_node); // populate array.of
         }
 
         match_type(node->assign.rhs, lhs_type);
@@ -2672,10 +2769,7 @@ void type_check(ASTNode *node)
     } break;
 
     case ASTNODE_BLOCK: {
-        push_new_scope(); {
-            register_scope_types_and_functions(node->statements);
-            type_check(node->statements);
-        } pop_scope();
+        type_check(node->statements);
         type_check(node->next);
     } break;
 
@@ -2718,14 +2812,7 @@ void type_check(ASTNode *node)
                 self_arg->next = node->call.args;
                 node->call.args = self_arg;
             }
-        } else {
-            fn = get_function_symbol(node->name); // TODO: check in all symbols, then make sure it's a function
-            if (!fn) {
-                loc_print(node->loc);
-                errorln("Function '%s' is not declared", node->name);
-                exit(1);
-            }
-        }
+        } else fn = node->call.callee->decl.sym;
 
         match_arguments(node->call.args, fn->type, fn->loc, node->loc);
 
@@ -2786,24 +2873,37 @@ void type_check(ASTNode *node)
     } break;
 
     case ASTNODE_RETURN: {
-        TypeInfo *expected_ret = node->ret.fn->decl.sym->type->fn.ret_type;
+        Symbol *fn_sym = get_current_function();
+        if (!fn_sym) {
+            loc_print(node->loc);
+            errorln("Invalid return outside of function");
+            exit(1);
+        }
+
+        debug("Return type of function %s is %p\n", fn_sym->name, fn_sym->type);
+        //type_print(fn_sym->type->fn.ret_type);
+        TypeInfo *expected_ret = fn_sym->type->fn.ret_type;
+
         if (!node->ret.expr && !are_types_equal(expected_ret, primitive_type(PRIMITIVE_VOID))) {
             loc_print(node->loc);
-            error("Function '%s' expectes '", node->ret.fn->decl.sym->name);
+            error("Function '%s' expectes '", fn_sym->name);
             type_print(expected_ret);
             printf("' as return type\n");
             exit(1);
-        } else match_type(node->ret.expr, expected_ret);
+        } else {
+            match_type(node->ret.expr, expected_ret);
+        }
+
         if (node->next) {
             loc_print(node->next->loc);
             warningln("Unreachable code after return statement");
-            type_check(node->next);
+            type_check(node->next); // TODO: do I type check it anyway?
         }
     } break;
 
     case ASTNODE_UNARY: {
         type_check(node->unary.operand);
-        if (node->unary.operator == OP_ADDRESS_OF) {
+        if (node->unary.operator == OP_POINTER_TO) {
             todoln("Check if operand is a lvalue");
             exit(1);
         }
@@ -2814,36 +2914,19 @@ void type_check(ASTNode *node)
         type_check(node->binary.right);
     } break;
 
-    case ASTNODE_IDENT: {
-        Symbol *sym = get_symbol(node->name);
-        if (!sym) {
-            loc_print(node->loc);
-            errorln("Identifier '%s' is not declared", node->name);
-            exit(1);
-        }
-        if (sym->type->kind == KIND_NOT_DECLARED) {
-            Symbol *type_sym = get_type_symbol(sym->type->name);
-            if (type_sym) {
-                sym->type = type_sym->type;
-            } else {
-                loc_print(node->loc);
-                errorln("Unknown type '%s' for identifier '%s'", sym->type->name, sym->name);
-                exit(1);
-            }
-        }
-        node->ident = sym;
-    } break;
-
+    case ASTNODE_IDENT:
     case ASTNODE_NUMBER:
     case ASTNODE_STRING:
     case ASTNODE_BOOL:
         break;
 
     case ASTNODE_ARRAY_LITERAL: {
-        if (node->array.size) {
-            TypeInfo *elts_type = node_type(node->array.head);
-            node->array.of = elts_type;
-        }
+        todoln("%u", __LINE__);
+        exit(1);
+        //if (node->array.size) {
+        //    TypeInfo *elts_type = node_type(node->array.head);
+        //    node->array.of = elts_type;
+        //}
     } break;
 
     default:
@@ -2912,7 +2995,7 @@ void extract_declarations(ASTNode *node, Nodes *type_defs, Nodes *struct_defs, N
         case ASTNODE_DECLARATION:
             switch (node->decl.sym->kind) {
             case SYM_VARIABLE:
-                if (!in_global_scope()) break;
+                if (!node->decl.sym->scope->is_global) break;
                 if (node->decl.sym->var.initialized) da_push(glob_var_defs, node);
                 else da_push(glob_var_decls, node);
                 break;
@@ -2922,27 +3005,18 @@ void extract_declarations(ASTNode *node, Nodes *type_defs, Nodes *struct_defs, N
                 extract_declarations(node->decl.fn.block, type_defs, struct_defs, fn_decls, fn_defs, glob_var_decls,
                         glob_var_defs);
                 break;
-            case SYM_TYPE:
-                if (node->decl.sym->type->kind == KIND_STRUCT) {
-                    da_push(type_defs, node);
-                    da_push(struct_defs, node);
+            case SYM_STRUCT:
+                da_push(type_defs, node);
+                da_push(struct_defs, node);
 
-                    push_new_scope(); {
-                        extract_declarations(node->decl.strct.members, type_defs, struct_defs, fn_decls, fn_defs, glob_var_decls, glob_var_defs);
-                    } pop_scope();
-                } else {
-                    todoln("Extract type declaration from kind %s", kind_as_string(node->decl.sym->type->kind));
-                    exit(1);
-                }
+                extract_declarations(node->decl.strct.members, type_defs, struct_defs, fn_decls, fn_defs, glob_var_decls, glob_var_defs);
                 break;
             default: unreachableln("SymbolKind %d in extract_declarations", node->decl.sym->kind); exit(1);
             }
             break;
         case ASTNODE_BLOCK:
-            push_new_scope(); {
-                extract_declarations(node->statements, type_defs, struct_defs, fn_decls, fn_defs, glob_var_decls,
-                        glob_var_defs);
-            } pop_scope();
+            extract_declarations(node->statements, type_defs, struct_defs, fn_decls, fn_defs, glob_var_decls,
+                    glob_var_defs);
             break;
         case ASTNODE_IF:
         case ASTNODE_WHILE:
@@ -2968,7 +3042,7 @@ void generate_c_code(ASTNode *node, FILE *f);
 void generate_unary_operation(ASTNode *node, FILE *f)
 {
     switch (node->unary.operator) {
-    case OP_ADDRESS_OF:    fprintf(f, "&("); generate_c_code(node->unary.operand, f); fprintf(f, ")"); break;
+    case OP_POINTER_TO:    fprintf(f, "&("); generate_c_code(node->unary.operand, f); fprintf(f, ")"); break;
     case OP_DEREFERENCE:   fprintf(f, "*("); generate_c_code(node->unary.operand, f); fprintf(f, ")"); break;
     default:
         unreachableln("Operator %u in generate_unary_operation", node->unary.operator);
@@ -3035,9 +3109,7 @@ void generate_c_code(ASTNode *node, FILE *f)
             Symbol *sym = fn_defs.items[i]->decl.sym;
             generate_fn_signature(sym, f);
             fprintf(f, " ");
-            push_new_scope(); {
-                generate_c_code(fn_defs.items[i]->decl.fn.block, f);
-            } pop_scope();
+            generate_c_code(fn_defs.items[i]->decl.fn.block, f);
             fprintf(f, "\n");
         }
 
@@ -3052,24 +3124,25 @@ void generate_c_code(ASTNode *node, FILE *f)
     } break;
 
     case ASTNODE_DECLARATION: {
-        switch (node->decl.sym->kind) {
+        Symbol *sym = node->decl.sym;
+        switch (sym->kind) {
         case SYM_VARIABLE: {
-            if (in_global_scope()) break; // global variables have been already been generated
-            generate_type(node->decl.sym->type, node->decl.sym->name, f);
+            if (sym->scope->is_global) break; // global variables have been already been generated
+            generate_type(sym->type, sym->name, f);
             fprintf(f, " ");
             if (node->decl.var.init) {
                 generate_c_code(node->decl.var.init, f);
             } else {
-                if (node->decl.sym->type->kind != KIND_ARRAY) {
-                    fprintf(f, "%s", node->decl.sym->name);
+                if (sym->type->kind != KIND_ARRAY) {
+                    fprintf(f, "%s", sym->name);
                 }
                 fprintf(f, ";\n");
             }
         } break;
         case SYM_FUNCTION:
-        case SYM_TYPE: 
+        case SYM_STRUCT: 
             break;
-        default: unreachableln("SymbolKind %d generating declaration node", node->decl.sym->kind); exit(1);
+        default: unreachableln("SymbolKind %d generating declaration node", sym->kind); exit(1);
         }
 
         generate_c_code(node->next, f);
@@ -3099,11 +3172,7 @@ void generate_c_code(ASTNode *node, FILE *f)
 
     case ASTNODE_BLOCK: {
         fprintf(f, "{\n");
-
-        push_new_scope(); {
-            generate_c_code(node->statements, f);
-        } pop_scope();
-
+        generate_c_code(node->statements, f);
         fprintf(f, "}\n");
         generate_c_code(node->next, f);
     } break;
@@ -3317,11 +3386,50 @@ int main(int argc, char **argv)
     timer_finish(&parsing_timer, "Parsing");
     /// End Parsing
 
+    /// Begin Name resolution
+    Timer name_resolution_timer = {0};
+    timer_start(&name_resolution_timer);
+
+    resolve_names(ast);
+
+    timer_finish(&name_resolution_timer, "Name resolution");
+    dump_symbols();
+    /// End Name resolution
+
     /// Begin Type checking
     Timer type_check_timer = {0};
     timer_start(&type_check_timer);
 
     type_check(ast);
+
+    // TODO: capire dove metterlo
+    //Symbol *main_fn = get_function_symbol("main");
+    //if (!main_fn) {
+    //    errorln("Entry point function 'main' is not declared");
+    //    exit(1);
+    //} else {
+    //    bool ok = false;
+    //    for (int i = 0; i < MAIN_FN_ALTERNATIVES; i++) {
+    //        if (are_types_equal(main_fn->type, _types_main_fn[i])) {
+    //            ok = true;
+    //            break;
+    //        }
+    //    }
+    //    if (!ok) {
+    //        loc_print(main_fn->loc);
+    //        errorln("Mismatched entry point function 'main' type declaration");
+    //        note("Got ");
+    //        type_print(main_fn->type);
+    //        printf("\n");
+    //        noteln("But expected one of these %u alternatives:", MAIN_FN_ALTERNATIVES);
+    //        for (int i = 0; i < MAIN_FN_ALTERNATIVES; i++) {
+    //            note("%d: ", i+1);
+    //            type_print(_types_main_fn[i]);
+    //            printf("\n");
+    //        }
+    //        exit(1);
+    //    }
+    //}
 
     timer_finish(&type_check_timer, "Type checking");
     /// End Type checking
