@@ -65,6 +65,7 @@
 #include <sys/wait.h>
 #include <assert.h>
 #include <ctype.h>
+#include <stdint.h>
 #include <time.h>
 
 #define STRINGS_IMPLEMENTATION
@@ -786,7 +787,8 @@ typedef enum
     PRIMITIVE_UNKNOWN = -1,
 
     PRIMITIVE_VOID = 0,
-    PRIMITIVE_U32,
+    PRIMITIVE_INT,
+    //PRIMITIVE_UINT,
     PRIMITIVE_STRING,
     PRIMITIVE_BOOL,
 
@@ -798,7 +800,8 @@ char *primitive_type_as_string(PrimitiveType type)
 {
     switch (type) {
     case PRIMITIVE_VOID:   return "void";
-    case PRIMITIVE_U32:    return "uint";
+    case PRIMITIVE_INT:    return "int";
+    //case PRIMITIVE_UINT:    return "uint";
     case PRIMITIVE_STRING: return "string";
     case PRIMITIVE_BOOL:   return "bool";
     default:
@@ -812,7 +815,8 @@ char *primitive_type_to_c(PrimitiveType type)
 {
     switch (type) {
     case PRIMITIVE_VOID:   return "void";
-    case PRIMITIVE_U32:    return "uint32_t";
+    case PRIMITIVE_INT:    return "int32_t";
+    //case PRIMITIVE_UINT:   return "uint32_t";
     case PRIMITIVE_STRING: return "char *";
     case PRIMITIVE_BOOL:   return "int";
     default:
@@ -1011,7 +1015,7 @@ bool _are_types_equal(TypeInfo *a, TypeInfo *b, bool report_errors, Location *lo
                     error("Function have different arguments in position %zu: '", i+1);
                     type_print(pa);
                     printf("' and '");
-                    type_print(pa);
+                    type_print(pb);
                     printf("'\n");
                 }
                 return false;
@@ -1110,6 +1114,7 @@ typedef union
 {
     char string[64];
     bool _bool;
+    //uint32_t _uint;
     int32_t _int;
 } PrimitiveValue;
 
@@ -1206,14 +1211,16 @@ static inline TypeInfo *any_type(void) { return &_type_any; }
 
 static_assert(__primitive_types_count == 5-1, "Declare all primitive types and retrieve them in primitive_type");
 static TypeInfo _type_primitive_void;
-static TypeInfo _type_primitive_u32;
+static TypeInfo _type_primitive_int;
+//static TypeInfo _type_primitive_uint;
 static TypeInfo _type_primitive_string;
 static TypeInfo _type_primitive_bool;
 static inline TypeInfo *primitive_type(PrimitiveType type)
 {
     switch (type) {
     case PRIMITIVE_VOID:   return &_type_primitive_void;
-    case PRIMITIVE_U32:    return &_type_primitive_u32;
+    case PRIMITIVE_INT:    return &_type_primitive_int;
+    //case PRIMITIVE_UINT:    return &_type_primitive_uint;
     case PRIMITIVE_STRING: return &_type_primitive_string;
     case PRIMITIVE_BOOL:   return &_type_primitive_bool;
     default:
@@ -1225,7 +1232,7 @@ static inline TypeInfo *primitive_type(PrimitiveType type)
 #define MAIN_FN_ALTERNATIVES (4)
 static TypeInfo *_types_main_fn[MAIN_FN_ALTERNATIVES] = {0};
 
-Symbol *get_symbol(char *name)
+Symbol *get_symbol(const char *name)
 {
     for (Scope *scope = scopes.current; scope; scope = scope->outer) {
         for (size_t sym_i = 0; sym_i < scope->symbols.count; sym_i++) {
@@ -1429,7 +1436,7 @@ ASTNode *parse_grouping(Parser *parser)
 //{
 //    switch (type)
 //    {
-//        case TYPE_U32: return sizeof(int32_t);
+//        case TYPE_UINT: return sizeof(int32_t);
 //        default: 
 //            errorln("Unreachable type %u in size_of_type", type);
 //            exit(1);
@@ -1440,26 +1447,11 @@ static_assert(__primitive_types_count == 5-1, "Cover all primitive types in prim
 PrimitiveType primitive_type_from_string(const char *type_string)
 {
          if (streq(type_string, primitive_type_as_string(PRIMITIVE_VOID)))   return PRIMITIVE_VOID;
-    else if (streq(type_string, primitive_type_as_string(PRIMITIVE_U32)))    return PRIMITIVE_U32;
+    else if (streq(type_string, primitive_type_as_string(PRIMITIVE_INT)))    return PRIMITIVE_INT;
+    //else if (streq(type_string, primitive_type_as_string(PRIMITIVE_UINT)))   return PRIMITIVE_UINT;
     else if (streq(type_string, primitive_type_as_string(PRIMITIVE_STRING))) return PRIMITIVE_STRING;
     else if (streq(type_string, primitive_type_as_string(PRIMITIVE_BOOL)))   return PRIMITIVE_BOOL;
     else                                                                     return PRIMITIVE_UNKNOWN;
-}
-
-void parse_generic_type(Parser *parser, TypeInfo *type)
-{
-    if (type->kind != KIND_STRUCT && !type->strct.is_generic) {
-        loc_print(current_token->loc);
-        error("Type ");
-        if (strlen(type->name) > 0) printf("%s ", type->name);
-        type_print(type);
-        printf(" is not generic\n");
-        exit(1);
-    }
-
-    parser_expect(parser, TOK_LESS_THAN);
-    todoln("Parse generic struct %s", type->name);
-    parser_expect(parser, TOK_GREATER_THAN);
 }
 
 ASTNode *parse_statement(Parser *parser);
@@ -1583,10 +1575,6 @@ void _parse_struct_declaration(Parser *parser, ASTNode *node)
     }
     parser_expect(parser, TOK_R_CUPAREN);
 }
-
-// a : uint     ;
-// b : uint = 3 ;
-// c :      = 3 ;
 
 void _parse_variable_declaration(Parser *parser, ASTNode *node)
 {
@@ -1797,7 +1785,7 @@ ASTNode *parse_call_infix(Parser *parser, ASTNode *left)
     ASTNode *node = create_node(ASTNODE_CALL, left->name, left->loc); // TODO: left->loc ?
     node->call.callee = left;
 
-    if (current_token->type == TOK_R_PAREN) {
+    if (current_token->type != TOK_R_PAREN) {
         node->call.args = parse_expression_list(parser);
     }
     parser_expect(parser, TOK_R_PAREN);
@@ -2020,13 +2008,14 @@ TypeInfo *resolve_type_expression(ASTNode *expr)
         PrimitiveType prim = primitive_type_from_string(expr->name);
         if (prim != PRIMITIVE_UNKNOWN) return primitive_type(prim);
 
-        Symbol *struct_sym = expr->ident;
-        //Symbol *struct_sym = get_struct_symbol(expr->name); // TODO
-        if (struct_sym) return struct_sym->type;
+        Symbol *sym = expr->ident;
+        if (!sym) {
+            loc_print(expr->loc);
+            errorln("Unknown type '%s'", expr->name);
+            exit(1);
+        }
 
-        loc_print(expr->loc);
-        errorln("Unknown type '%s'", expr->name);
-        exit(1);
+        return sym->type;
     }
 
     case ASTNODE_UNARY: {
@@ -2071,6 +2060,15 @@ TypeInfo *resolve_type_expression(ASTNode *expr)
 
 Symbol *create_symbol(SymbolKind kind, const char *prefix, const char *name, Location loc)
 {
+    Symbol *other = get_symbol(name); // TODO: I should do it with prefix as well, because I can allow shadowing (even though I'm not a big fan) but in the same scope no symbols with the same name
+    if (other) {
+        loc_print(loc);
+        errorln("Redeclaration of symbol '%s'", name);
+        loc_print(other->loc);
+        noteln("First declared here");
+        exit(1);
+    }
+
     Symbol *sym = calloc(1, sizeof(Symbol));
     assert(sym);
 
@@ -2078,6 +2076,9 @@ Symbol *create_symbol(SymbolKind kind, const char *prefix, const char *name, Loc
     sym->loc = loc;
     if (prefix) strcpy(sym->prefix, prefix);
     strcpy(sym->name, name);
+
+    register_symbol(sym);
+
     return sym;
 }
 static inline Symbol *create_declaration_symbol_with_prefix(ASTNode *node, const char *prefix)
@@ -2098,18 +2099,12 @@ void create_types_and_functions_definitions_in_scope(ASTNode *root, const char *
             continue;
         }
 
-        current->decl.sym = create_declaration_symbol_with_prefix(current, prefix);
-
-        Symbol *sym = current->decl.sym;
-        Symbol *other = get_symbol(sym->name);
-        if (other) {
-            loc_print(current->loc);
-            errorln("Redeclaration of symbol '%s'", sym->name);
-            loc_print(other->loc);
-            noteln("First declared here");
-            exit(1);
+        if (current->decl.sym) {
+            debugln("Can this happen? %u", __LINE__);
         }
-        register_symbol(sym);
+
+        current->decl.sym = create_declaration_symbol_with_prefix(current, prefix);
+        Symbol *sym = current->decl.sym;
 
         if (sym->kind == SYM_FUNCTION) {
             ASTNode *fn_decl = current;
@@ -2139,7 +2134,55 @@ void create_types_and_functions_definitions_in_scope(ASTNode *root, const char *
             ASTNode *fn_ret = fn_decl->decl.fn.ret;
             fn_type->fn.ret_type = fn_ret ? resolve_type_expression(fn_ret) : primitive_type(PRIMITIVE_VOID);
         } else if (sym->kind == SYM_STRUCT) {
-            todoln("Create struct definition for '%s'", sym->name);
+            ASTNode *struct_decl = current;
+            TypeInfo *struct_type = create_type(KIND_STRUCT, sym->name);
+            sym->type = struct_type;
+
+            if (struct_decl->decl.strct.is_generic) {
+                struct_type->strct.is_generic = true;
+
+                ASTNode *param_node = struct_decl->decl.strct.params;
+                while (param_node) {
+                    param_node->decl.sym = create_declaration_symbol(param_node);
+                    Symbol *param_sym = param_node->decl.sym;
+
+                    if (param_node->decl.var.type) {
+                        TypeInfo *param_type = resolve_type_expression(param_node->decl.var.type);
+                        param_sym->type = param_type;
+                        da_push(&struct_type->strct.params, param_type);
+                    } else {
+                        // TODO: for now, then infer
+                        loc_print(param_node->loc);
+                        errorln("Parameter '%s' must have an explicit type", param_sym->name);
+                        exit(1);
+                    }
+
+                    param_node = param_node->next;
+                }
+            }
+
+            ASTNode *member_node = struct_decl->decl.strct.members;
+            while (member_node) {
+                member_node->decl.sym = create_declaration_symbol(member_node);
+                Symbol *member_sym = member_node->decl.sym;
+
+                if (member_node->decl.kind == SYM_VARIABLE) { 
+                    if (member_node->decl.var.type) {
+                        TypeInfo *member_type = resolve_type_expression(member_node->decl.var.type);
+                        member_sym->type = member_type;
+                        da_push(&struct_type->strct.members, member_sym);
+                    } else {
+                        // TODO: for now, then infer
+                        loc_print(member_node->loc);
+                        errorln("member '%s' must have an explicit type", member_sym->name);
+                        exit(1);
+                    }
+                }
+
+                member_node = member_node->next;
+            }
+        } else {
+            unreachableln("DeclarationKind %u in create_types_and_functions_definitions_in_scope", sym->kind);
             exit(1);
         }
 
@@ -2153,6 +2196,7 @@ static void bind_expression(ASTNode *expr)
 
     switch (expr->type) {
     case ASTNODE_IDENT: {
+        if (primitive_type_from_string(expr->name) != PRIMITIVE_UNKNOWN) break;
         Symbol *sym = get_symbol(expr->name);
         if (!sym) {
             loc_print(expr->loc);
@@ -2243,18 +2287,13 @@ static void bind_function_declaration(ASTNode *node) {
 
 static void bind_variable_declaration(ASTNode *node, const char *prefix)
 {
+    if (node->decl.sym) return;
+
     node->decl.sym = create_declaration_symbol_with_prefix(node, prefix);
 
-    Symbol *other = get_symbol(node->decl.sym->name);
-    if (other) {
-        loc_print(node->loc);
-        errorln("Redeclaration of variable '%s'", node->decl.sym->name);
-        loc_print(other->loc);
-        noteln("Firs declared here");
-        exit(1);
+    if (node->decl.var.type) {
+        bind_expression(node->decl.var.type);
     }
-    register_symbol(node->decl.sym);
-
     if (node->decl.var.init) {
         bind_expression(node->decl.var.init);
     }
@@ -2335,10 +2374,10 @@ static void bind_declaration_list_with_prefix(ASTNode *list, const char *prefix)
 }
 static inline void bind_declaration_list(ASTNode *list) { bind_declaration_list_with_prefix(list, NULL); }
 
-void resolve_names(ASTNode *root) {
+void bind_symbols(ASTNode *root) {
     if (!root) return;
     if (root->type != ASTNODE_PROGRAM) {
-        unreachableln("resolve_names must be called ");
+        unreachableln("bind_symbols must be called on ast root");
         exit(1);
     }
 
@@ -2514,7 +2553,7 @@ TypeInfo *node_type(ASTNode *node)
     case ASTNODE_UNARY: result_type = unary_type(node); break;
     case ASTNODE_BINOP: result_type = binop_type(node); break;
 
-    case ASTNODE_NUMBER: result_type = primitive_type(PRIMITIVE_U32);    break;
+    case ASTNODE_NUMBER: result_type = primitive_type(PRIMITIVE_INT);    break;
     case ASTNODE_STRING: result_type = primitive_type(PRIMITIVE_STRING); break;
     case ASTNODE_BOOL:   result_type = primitive_type(PRIMITIVE_BOOL);   break;
     case ASTNODE_ARRAY_LITERAL: {
@@ -2732,10 +2771,6 @@ void type_check(ASTNode *node)
                 type_check(member_node);
                 member_node = member_node->next;
             }
-            for (size_t i = 0; i < sym->strct.members.count; i++) {
-                Symbol *member = sym->strct.members.items[i];
-                da_push(&sym->type->strct.members, member);
-            }
         } break;
         default: unreachableln("SymbolKind %u in declaration node in type_check", sym->kind); exit(1);
         }
@@ -2880,8 +2915,6 @@ void type_check(ASTNode *node)
             exit(1);
         }
 
-        debug("Return type of function %s is %p\n", fn_sym->name, fn_sym->type);
-        //type_print(fn_sym->type->fn.ret_type);
         TypeInfo *expected_ret = fn_sym->type->fn.ret_type;
 
         if (!node->ret.expr && !are_types_equal(expected_ret, primitive_type(PRIMITIVE_VOID))) {
@@ -2993,10 +3026,15 @@ void extract_declarations(ASTNode *node, Nodes *type_defs, Nodes *struct_defs, N
     while (node) {
         switch (node->type) {
         case ASTNODE_DECLARATION:
-            switch (node->decl.sym->kind) {
+            Symbol *sym = node->decl.sym;
+            switch (sym->kind) {
             case SYM_VARIABLE:
-                if (!node->decl.sym->scope->is_global) break;
-                if (node->decl.sym->var.initialized) da_push(glob_var_defs, node);
+                if (!sym->scope) {
+                    unreachableln("Symbol '%s' scope should have been set", sym->name);
+                    exit(1);
+                }
+                if (!sym->scope->is_global) break;
+                if (sym->var.initialized) da_push(glob_var_defs, node);
                 else da_push(glob_var_decls, node);
                 break;
             case SYM_FUNCTION:
@@ -3011,7 +3049,7 @@ void extract_declarations(ASTNode *node, Nodes *type_defs, Nodes *struct_defs, N
 
                 extract_declarations(node->decl.strct.members, type_defs, struct_defs, fn_decls, fn_defs, glob_var_decls, glob_var_defs);
                 break;
-            default: unreachableln("SymbolKind %d in extract_declarations", node->decl.sym->kind); exit(1);
+            default: unreachableln("SymbolKind %d in extract_declarations", sym->kind); exit(1);
             }
             break;
         case ASTNODE_BLOCK:
@@ -3304,7 +3342,8 @@ void initialize(void)
     _type_any  = (TypeInfo){ .kind = KIND_ANY };
 
     _type_primitive_void   = (TypeInfo){ .kind = KIND_PRIMITIVE, .primitive = PRIMITIVE_VOID };
-    _type_primitive_u32    = (TypeInfo){ .kind = KIND_PRIMITIVE, .primitive = PRIMITIVE_U32 };
+    _type_primitive_int    = (TypeInfo){ .kind = KIND_PRIMITIVE, .primitive = PRIMITIVE_INT };
+    //_type_primitive_uint   = (TypeInfo){ .kind = KIND_PRIMITIVE, .primitive = PRIMITIVE_UINT };
     _type_primitive_string = (TypeInfo){ .kind = KIND_PRIMITIVE, .primitive = PRIMITIVE_STRING };
     _type_primitive_bool   = (TypeInfo){ .kind = KIND_PRIMITIVE, .primitive = PRIMITIVE_BOOL };
 
@@ -3315,7 +3354,7 @@ void initialize(void)
     _types_main_fn[0] = main_fn; // (void) -> void
 
     main_fn = create_type_without_name(KIND_FUNCTION);
-    main_fn->fn.ret_type = primitive_type(PRIMITIVE_U32);
+    main_fn->fn.ret_type = primitive_type(PRIMITIVE_INT);
     _types_main_fn[1] = main_fn; // (void) -> int
 
     TypeInfo *main_args_type = create_type_without_name(KIND_ARRAY);
@@ -3327,7 +3366,7 @@ void initialize(void)
     _types_main_fn[2] = main_fn; // ([string]) -> void
 
     main_fn = create_type_without_name(KIND_FUNCTION);
-    main_fn->fn.ret_type = primitive_type(PRIMITIVE_U32);
+    main_fn->fn.ret_type = primitive_type(PRIMITIVE_INT);
     da_push(&main_fn->fn.params, main_args_type);
     _types_main_fn[3] = main_fn; // ([string]) -> int
 }
@@ -3386,15 +3425,14 @@ int main(int argc, char **argv)
     timer_finish(&parsing_timer, "Parsing");
     /// End Parsing
 
-    /// Begin Name resolution
-    Timer name_resolution_timer = {0};
-    timer_start(&name_resolution_timer);
+    /// Begin Symbol binding
+    Timer symbol_binding_timer = {0};
+    timer_start(&symbol_binding_timer);
 
-    resolve_names(ast);
+    bind_symbols(ast);
 
-    timer_finish(&name_resolution_timer, "Name resolution");
-    dump_symbols();
-    /// End Name resolution
+    timer_finish(&symbol_binding_timer, "Symbol binding");
+    /// End Symbol binding
 
     /// Begin Type checking
     Timer type_check_timer = {0};

@@ -11,10 +11,12 @@ main : () -> int = {
     //p = ^x;
 
     S : struct = {
-        y: int;
+        y: bool;
     }
     s: S;
     //p_S := Ptr.alloc(S);
     p_S := ^s;
-    p_S.y = 5; // autodereferencing
+    p_S.y = true; // autodereferencing
+
+    return 0;
 }

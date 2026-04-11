@@ -1,5 +1,5 @@
 main : () -> int = {
-    T : type = int;
+    T : Type = int;
 
     if   T.is(int):    print("Yeah");
     elif T.is(string): print("Ah hell nah");

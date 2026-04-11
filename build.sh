@@ -2,4 +2,4 @@
 
 clear
 
-cc -o kjude kjude.c -Wall -Wextra -Werror -ggdb
+gcc -o kjude kjude.c -Wall -Wextra -Werror -ggdb -Wunused-function
