@@ -1,0 +1,6 @@
+main : () -> int = {
+    a : string = "hello";
+    b : string = "world";
+    c : string = a + b;
+    return 0;
+}

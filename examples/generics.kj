@@ -1,15 +1,16 @@
-//GenericStruct : struct<T: Type, K: Type> = {
-//    t: T;
-//    k: K;
-//}
-
-//Array : struct<T: Type, N: uint> = {
-//    data: [T, N];
-//}
+GenericStruct : struct<T: Type, K: Type> = {
+    t: T;
+    k: ^K;
+}
 
 main : () -> int = {
-    //S : GenericStruct<uint, string>;
+    s1 : GenericStruct<int, bool>;
+    s2 : ^GenericStruct<bool, int>;
+    s3 : [GenericStruct<[int], int>];
 
-    t: Type = uint;
+    int_print : (n: int) = extern;
+    s1.t = 69;
+    int_print(s1.t);
+
     return 0;
 }

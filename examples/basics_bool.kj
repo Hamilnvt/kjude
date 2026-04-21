@@ -1,0 +1,9 @@
+main : () -> int = {
+    a : bool = true;
+    b : bool = false;
+
+    if a {
+        return 0;
+    }
+    return 1;
+}

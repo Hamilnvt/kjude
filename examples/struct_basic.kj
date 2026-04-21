@@ -1,0 +1,11 @@
+Point : struct = {
+    x: int;
+    y: int;
+}
+
+main : () -> int = {
+    p : Point;
+    p.x = 10;
+    p.y = 20;
+    return 0;
+}

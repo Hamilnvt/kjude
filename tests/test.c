@@ -44,7 +44,7 @@ int main(int argc, char **argv) {
         int is_negative_test = (strstr(entry->d_name, "fail") != NULL);
 
         char command[2048];
-        snprintf(command, sizeof(command), "./kjude %s > /dev/null 2>&1", filepath);
+        snprintf(command, sizeof(command), "./bin/kjude %s > /dev/null 2>&1", filepath);
 
         printf("Testing %-30s ... ", entry->d_name);
         

@@ -1,0 +1,12 @@
+main : () -> int = {
+    a : int = 10;
+    b : int = 3;
+
+    sum : int = a + b;
+    prod : int = a * b;
+
+    if sum == 13 {
+        return 0;
+    }
+    return 1;
+}

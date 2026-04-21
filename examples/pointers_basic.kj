@@ -1,0 +1,8 @@
+main : () -> int = {
+    x : int = 42;
+    p : ^int = ^x;
+    if p. == 42 {
+        return 0;
+    }
+    return 1;
+}

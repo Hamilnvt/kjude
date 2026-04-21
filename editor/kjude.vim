@@ -31,12 +31,11 @@ syntax keyword kjControlFlow
 
 syntax keyword kjType
       \ void
-      \ int string
+      \ int uint bool string
       \ struct
 
 syntax keyword kjConstant
       \ true false
-
 
 syntax region kjString
       \ start=+"+  skip=+\\"+  end=+"+
@@ -55,8 +54,8 @@ syntax match kjOperator
       \ "=="
 
 
-syntax keyword kjStdLib
-      \ alloc free
+" syntax keyword kjStdLib
+"       \ alloc free
 
 highlight default link kjLineComment    Comment
 highlight default link kjTodo           Todo
@@ -70,4 +69,4 @@ highlight default link kjNumber         Number
 
 highlight default link kjOperator       Operator
 
-highlight default link kjStdLib         Function
+" highlight default link kjStdLib         Function

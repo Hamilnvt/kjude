@@ -1,0 +1,6 @@
+main : () -> int = {
+    a : int = 5;
+    b : bool = true;
+    c : int = a + b;
+    return 0;
+}

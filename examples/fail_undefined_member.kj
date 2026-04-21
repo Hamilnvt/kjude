@@ -1,0 +1,8 @@
+Point : struct = {
+    x: int;
+}
+
+main : () -> int = {
+    p : Point;
+    return p.undefined;
+}
