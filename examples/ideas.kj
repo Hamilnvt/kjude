@@ -1,24 +1,13 @@
+println : (msg: string) = extern;
+
 S1 : struct = {
     x: int;
 
-    //print: (s: S1) = { // sarebbe incredibile
-    //    println("S = \{\n");
-    //    println("x = {s.x}");
-    //    println("\}\n");
-    //}
-}
-
-print: (s1: S1) = { // cosi' non funziona
-    
-}
-
-//print: (s1: S1) = {
-//    
-//}
-
-daje: () -> string = {
-    if false: return "daje";
-    else: "palle"
+    print: (s: S1) = {
+        println("S = \{\n");
+        println("x = {s.x}");
+        println("\}\n");
+    }
 }
 
 main : () -> int = {
@@ -36,8 +25,8 @@ main : () -> int = {
         s3: S3;
     }
 
-    //print(s);
-    //s.print();
+    print(s1);
+    s1.print();
 
     return 0;
 }

@@ -1,5 +1,6 @@
-malloc : (size: uint) -> ^Any = extern;
+int_print : (n: int) = extern;
 
-main : () -> int {
+main : () -> int = {
+    int_print(69);
     return 0;
 }

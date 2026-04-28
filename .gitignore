@@ -4,7 +4,8 @@ a.out
 kjude
 kjude_output
 test
-__kjude_intermediate.c
+__kjude_intermediate_*.c
+output_*
 ast.dot
 ast.png
 ast.svg

@@ -5,9 +5,90 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <stdbool.h>
+#include <stdatomic.h>
 #include <dirent.h>
 #include <sys/stat.h>
 #include <sys/wait.h>
+#include <pthread.h>
+#include <unistd.h>
+
+#define DA_IMPLEMENTATION
+#include "dynamic_arrays.h"
+
+typedef struct 
+{
+    char *filepath;
+    char *filename;
+    bool should_fail;
+    bool result;
+    int exit_code;
+} Test;
+
+typedef struct
+{
+    Test *items;
+    size_t count;
+    size_t capacity;
+} Tests;
+
+typedef struct
+{
+    Test *tests;
+    size_t count;
+    _Atomic size_t next_index;
+} TestQueue;
+
+typedef struct
+{
+    TestQueue *queue;
+} WorkerArg;
+
+int run_cmd(char **cmd)
+{
+    if (cmd == NULL) return -1;
+
+    int status;
+    pid_t pid = fork();
+    switch (pid) {
+        case -1:
+            perror("fork");
+            exit(EXIT_FAILURE);
+        case 0:
+            freopen("/dev/null", "w", stdout);
+            freopen("/dev/null", "w", stderr);
+            execvp(*cmd, cmd);
+            fprintf(stderr, "ERROR: could not run cmd '%s'\n", *cmd);
+            exit(1);
+        default:
+            waitpid(pid, &status, 0);
+            return WEXITSTATUS(status);
+    }
+}
+
+void* worker(void *arg)
+{
+    WorkerArg *warg = (WorkerArg*)arg;
+    TestQueue *q = warg->queue;
+
+    while (1) {
+        size_t i = atomic_fetch_add(&q->next_index, 1);
+        if (i >= q->count) break;
+
+        Test *test = &q->tests[i];
+
+        char *cmd[] = {"./bin/kjude", test->filepath, NULL};
+        test->exit_code = run_cmd(cmd);
+
+        if (test->should_fail) {
+            test->result = (test->exit_code != 0);
+        } else {
+            test->result = (test->exit_code == 0);
+        }
+    }
+
+    return NULL;
+}
 
 int main(int argc, char **argv) {
     if (argc < 2) {
@@ -18,17 +99,16 @@ int main(int argc, char **argv) {
     const char *test_dir = argv[1];
     DIR *dir = opendir(test_dir);
     if (!dir) {
-        perror("Could not open test directory");
+        perror("Could not open directory");
         return 1;
     }
 
-    struct dirent *entry;
-    int passed = 0;
-    int failed = 0;
-
     printf("Running tests in directory: %s\n", test_dir);
-    printf("Convention: Files containing 'fail' must return a non-zero exit code.\n");
     printf("-------------------------------------------------\n");
+    fflush(stdout);
+
+    struct dirent *entry;
+    Tests tests = {0};
 
     while ((entry = readdir(dir)) != NULL) {
         if (entry->d_name[0] == '.') continue;
@@ -41,36 +121,59 @@ int main(int argc, char **argv) {
             continue;
         }
 
-        int is_negative_test = (strstr(entry->d_name, "fail") != NULL);
+        Test test = {
+            .filepath = strdup(filepath),
+            .filename = strdup(entry->d_name),
+            .should_fail = (strstr(entry->d_name, "fail") != NULL),
+        };
 
-        char command[2048];
-        snprintf(command, sizeof(command), "./bin/kjude %s > /dev/null 2>&1", filepath);
+        da_push(&tests, test);
+    }
+    closedir(dir);
 
-        printf("Testing %-30s ... ", entry->d_name);
-        
-        int status = system(command);
-        int exit_code = WEXITSTATUS(status);
+    long num_threads = sysconf(_SC_NPROCESSORS_ONLN);
+    if (num_threads < 1) num_threads = 4;
 
-        if (is_negative_test) {
-            if (exit_code != 0) {
-                printf("\033[32mPASS\033[0m\n");
-                passed++;
-            } else {
-                printf("\033[31mFAIL\033[0m (Expected failure, but compiled successfully)\n");
-                failed++;
-            }
-        } else {
-            if (exit_code == 0) {
-                printf("\033[32mPASS\033[0m\n");
-                passed++;
-            } else {
-                printf("\033[31mFAIL\033[0m (Expected success, got %d)\n", exit_code);
-                failed++;
-            }
-        }
+    TestQueue queue = {
+        .tests = tests.items,
+        .count = tests.count,
+        .next_index = 0,
+    };
+
+    pthread_t *threads = malloc(num_threads * sizeof(pthread_t));
+    WorkerArg *wargs = malloc(num_threads * sizeof(WorkerArg));
+
+    for (long t = 0; t < num_threads; t++) {
+        wargs[t].queue = &queue;
+        pthread_create(&threads[t], NULL, worker, &wargs[t]);
     }
 
-    closedir(dir);
+    for (long t = 0; t < num_threads; t++) {
+        pthread_join(threads[t], NULL);
+    }
+
+    free(threads);
+    free(wargs);
+
+    int passed = 0;
+    int failed = 0;
+    for (size_t i = 0; i < tests.count; i++) {
+        Test *test = &tests.items[i];
+
+        printf("Testing %-30s ... ", test->filename);
+
+        if (test->result) {
+            printf("\033[32mPASS\033[0m\n");
+            passed++;
+        } else {
+            if (test->should_fail) {
+                printf("\033[31mFAIL\033[0m (Expected failure, but compiled successfully)\n");
+            } else {
+                printf("\033[31mFAIL\033[0m (Expected success, but got %d)\n", test->exit_code);
+            }
+            failed++;
+        }
+    }
 
     printf("-------------------------------------------------\n");
     printf("Results:\n%d Passed\n%d Failed\n", passed, failed);

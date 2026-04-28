@@ -1,8 +1,0 @@
-GenericStruct : struct<T: Type, K: Type> = {
-    t: T;
-    k: ^K;
-}
-
-main : () -> int = {
-    return 0;
-}

@@ -79,7 +79,6 @@
 #include "strings.h"
 
 #define INDEX_NOT_FOUND ((size_t)-1)
-#define DEFAULT_KJUDE_INTERMEDIATE_C_FILE "__kjude_intermediate.c"
 #define KJUDE_RUNTIME_PATH "runtime/kjude_runtime.c"
 #define KJUDE_FILE_EXTENSION "kj"
 
@@ -470,7 +469,7 @@ static inline char *loc_get_path(Location loc)
     return included_files.items[loc.file_path];
 }
 
-size_t loc_get_path_index(char *file_path)
+size_t loc_get_path_index(const char *file_path)
 {
     for (size_t i = 0; i < included_files.count; i++) {
         if (streq(file_path, included_files.items[i]))
@@ -479,7 +478,7 @@ size_t loc_get_path_index(char *file_path)
     return INDEX_NOT_FOUND;
 }
 
-Location loc_new(char *file_path)
+Location loc_new(const char *file_path)
 {
     size_t index = loc_get_path_index(file_path);
     if (index == INDEX_NOT_FOUND) {
@@ -514,12 +513,12 @@ typedef struct
 } Parser;
 
 // TODO: I want it to take the source code, it should not be responsible to open files and so I could lex strings in the code on the flight
-Lexer lexer_new(char *file_path)
+Lexer lexer_new(const char *file_path)
 {
     Lexer lexer = {0};
     String source = {0};
     if (!read_entire_file(file_path, &source)) {
-        fprintf(stderr, "Could not open file `%s`.\n", file_path);
+        errorln("Could not open file `%s`.", file_path);
         exit(1);
     }
     s_push_null(&source);
@@ -825,15 +824,15 @@ typedef enum
 
     OP_DOUBLE_EQUALS,
     OP_NOT_EQUALS,
-    //OP_LESS,
-    //OP_GREATER,
+    OP_LESS,
+    OP_GREATER,
     OP_LESS_EQUALS,
     OP_GREATER_EQUALS,
 
     __op_types_count,
 } Operator;
 
-static_assert(__op_types_count == 8, "Cover all operators in operator_from_token_type");
+static_assert(__op_types_count == 10, "Cover all operators in operator_from_token_type");
 Operator operator_from_token_type(TokenType type)
 {
     switch (type) {
@@ -843,6 +842,8 @@ Operator operator_from_token_type(TokenType type)
     case TOK_STAR:          return OP_STAR;
     case TOK_DOUBLE_EQUALS: return OP_DOUBLE_EQUALS;
     case TOK_NOT_EQUALS:    return OP_NOT_EQUALS;
+    case TOK_LESS:          return OP_LESS;
+    case TOK_GREATER:       return OP_GREATER;
     case TOK_LESS_EQUALS:   return OP_LESS_EQUALS;
     case TOK_GREATER_EQUALS: return OP_GREATER_EQUALS;
     default:
@@ -851,7 +852,7 @@ Operator operator_from_token_type(TokenType type)
     }
 }
 
-static_assert(__op_types_count == 8, "Cover all operators in operator_as_string");
+static_assert(__op_types_count == 10, "Cover all operators in operator_as_string");
 char *operator_as_string(Operator op)
 {
     switch (op) {
@@ -862,6 +863,8 @@ char *operator_as_string(Operator op)
     case OP_STAR:          return "*";
     case OP_DOUBLE_EQUALS: return "==";
     case OP_NOT_EQUALS:    return "!=";
+    case OP_LESS:          return "<";
+    case OP_GREATER:       return ">";
     case OP_LESS_EQUALS:   return "<=";
     case OP_GREATER_EQUALS: return ">=";
     default:
@@ -2966,14 +2969,14 @@ void usage(char *program_name)
 bool run_cmd(char **cmd)
 {
     if (cmd == NULL) return false;
-    printf("CMD: ");
-    size_t i = 0;
-    char *s = cmd[i];
-    while (s != NULL) {
-        printf("%s ", s);
-        s = cmd[++i];
-    }
-    printf("\n");
+    //printf("CMD: ");
+    //size_t i = 0;
+    //char *s = cmd[i];
+    //while (s != NULL) {
+    //    printf("%s ", s);
+    //    s = cmd[++i];
+    //}
+    //printf("\n");
 
     int status;
     switch (fork()) {
@@ -2982,7 +2985,7 @@ bool run_cmd(char **cmd)
             exit(EXIT_FAILURE);
         case 0:
             execvp(*cmd, cmd);
-            fprintf(stderr, "ERROR: could not run cmd\n");
+            errorln("Could not run cmd");
             exit(1);
         default:
             wait(&status);
@@ -2990,12 +2993,12 @@ bool run_cmd(char **cmd)
     }
 }
 
-bool compile_c(void)
+bool compile_c(char *c_filename, char *output_filename)
 {
     char *gcc_cmd[] = {
         "gcc",
-        DEFAULT_KJUDE_INTERMEDIATE_C_FILE,
-        "-o", "output",
+        c_filename,
+        "-o", output_filename,
         "-Wall", "-Wextra",
         "-std=c99", "-pedantic", //"-pedantic-errors",
         NULL
@@ -3121,7 +3124,7 @@ TypeInfo *node_type(ASTNode *node)
     return result_type;
 }
 
-static_assert(__op_types_count == 8, "Cover all unary operators in binop_type");
+static_assert(__op_types_count == 10, "Cover all unary operators in binop_type");
 TypeInfo *unary_type(ASTNode *node)
 {
     TypeInfo *operand_type = node_type(node->unary.operand);
@@ -3160,7 +3163,7 @@ TypeInfo *unary_type(ASTNode *node)
 }
 
 // TODO: here I can do shortcircuit optimizations
-static_assert(__op_types_count == 8, "Cover all binary operators in binop_type");
+static_assert(__op_types_count == 10, "Cover all binary operators in binop_type");
 TypeInfo *binop_type(ASTNode *node)
 {
     TypeInfo *left  = node_type(node->binary.left);
@@ -3175,14 +3178,24 @@ TypeInfo *binop_type(ASTNode *node)
 
     switch (node->binary.op) {
     case OP_PLUS:
-        if (are_types_equal(left, right)) return left;
+        if (are_types_equal(left, right)) {
+            if (left->kind == KIND_PRIMITIVE && left->primitive == PRIMITIVE_STRING) {
+                todoln("Plus operator for strings is not yet implemented");
+                exit(1);
+            }
+            return left;
+        }
         break;
     case OP_STAR:
-        if (are_types_equal(left, right)) return left;
+        if (are_types_equal(left, right)) {
+            return left;
+        }
         break;
 
     case OP_DOUBLE_EQUALS:
     case OP_NOT_EQUALS:
+    case OP_LESS:
+    case OP_GREATER:
     case OP_LESS_EQUALS:
     case OP_GREATER_EQUALS:
         if (are_types_equal(left, right)) return primitive_type(PRIMITIVE_BOOL);
@@ -3599,9 +3612,7 @@ void generate_fn_signature(Symbol *sym, FILE *f)
 
     generate_type(sym->type->fn.ret_type, NULL, f, sym);
     fprintf(f, " ");
-    if (sym->scope->prefix) fprintf(f, "%s_", sym->scope->prefix);
-    fprintf(f, "%s", sym->name);
-    if (!sym->scope->is_global) fprintf(f, "_%lu", sym->scope->id);
+    generate_symbol_name(sym, f);
     fprintf(f, "(");
     if (da_is_empty(&sym->fn.params)) {
         fprintf(f, "void");
@@ -3621,6 +3632,11 @@ void generate_fn_signature(Symbol *sym, FILE *f)
 
 static void generate_symbol_name(Symbol *sym, FILE *f)
 {
+    if ((sym->kind == SYM_FUNCTION && streq(sym->name, "main")) ||
+        (sym->kind == SYM_FUNCTION && sym->fn.is_external)) {
+        fprintf(f, "%s", sym->name);
+        return;
+    }
     if (sym->scope && sym->scope->prefix) fprintf(f, "%s_", sym->scope->prefix);
     fprintf(f, "%s", sym->name);
     if (sym->scope && !sym->scope->is_global) fprintf(f, "_%lu", sym->scope->id);
@@ -3677,8 +3693,8 @@ void extract_declarations(ASTNode *node, Nodes *type_defs, Nodes *struct_defs, N
                 else da_push(glob_var_decls, node);
                 break;
             case SYM_FUNCTION:
-                da_push(fn_decls, node);
                 if (sym->fn.is_external) break;
+                da_push(fn_decls, node);
                 da_push(fn_defs, node);
                 extract_declarations(node->decl.fn.block, type_defs, struct_defs, fn_decls, fn_defs, glob_var_decls,
                         glob_var_defs);
@@ -4090,7 +4106,7 @@ void generate_c_code(ASTNode *node, FILE *f)
                 }
             }
         }
-        if (is_param) {
+        if (is_param || (node->ident->kind == SYM_FUNCTION && node->ident->fn.is_external)) {
             fprintf(f, "%s", node->ident->name);
         } else {
             if (node->ident->scope && node->ident->scope->prefix) fprintf(f, "%s_", node->ident->scope->prefix);
@@ -4149,17 +4165,20 @@ int main(int argc, char **argv)
     char *program_name = shift_arg(&argc, &argv);
 
     if (argc < 1) {
-        fprintf(stderr, "ERROR: file was not provided\n");
+        errorln("File was not provided");
         usage(program_name);
         exit(1);
     }
 
-    char *source_path = shift_arg(&argc, &argv);
-    const char *dot = strrchr(source_path, '.');
+    const char *source_path = shift_arg(&argc, &argv);
+    char *dot = strrchr(source_path, '.');
     if (!dot || streq(source_path, dot) || !streq(KJUDE_FILE_EXTENSION, dot+1)) {
         errorln("Unrecognized file extension '%s', should have "KJUDE_FILE_EXTENSION, dot);
         exit(1);
     }
+    char *slash = strrchr(source_path, '/'); 
+    char *source_name = strdup(slash ? slash+1 : source_path);
+    source_name[strlen(source_name)-3] = '\0'; // remove extension
 
     bool flag_generate_only = false;
     bool flag_generate_and_finalize = false;
@@ -4246,10 +4265,12 @@ int main(int argc, char **argv)
     Timer generation_timer = {0};
     timer_start(&generation_timer);
 
-    char *c_filename = DEFAULT_KJUDE_INTERMEDIATE_C_FILE;
+    char c_filename[24+strlen(source_name)];
+    snprintf(c_filename, sizeof(c_filename), "__kjude_intermediate_%s.c", source_name);
+
     FILE *c_file = fopen(c_filename, "w");
     if (c_file == NULL) {
-        fprintf(stderr, "Could not open file `%s`\n", c_filename);
+        errorln("Could not open file `%s`", c_filename);
         exit(1);
     }
     generate_c_code(ast, c_file);
@@ -4264,14 +4285,17 @@ int main(int argc, char **argv)
     Timer finalization_timer = {0};
     timer_start(&finalization_timer);
 
-    if (!compile_c()) return 1;
+    size_t output_size = (8+strlen(source_name))*sizeof(char);
+    char *output_filename = malloc(output_size);
+    snprintf(output_filename, output_size, "output_%s", source_name);
+
+    if (!compile_c(c_filename, output_filename)) return 1;
 
     if (!flag_generate_and_finalize)
         remove(c_filename);
 
     timer_finish(&finalization_timer, "Finalization");
     /// End Finalization
-
 
 end:
     timer_finish(&compilation_timer, "Compilation overall");
