@@ -1,14 +1,16 @@
+int_print : (n: int) = extern;
+
 main : () -> int = {
-    for i in [0..4]: print(i);
+    for i in [0..4]: int_print(i);
 
     L := [1..10, 2];
-    for l in L: print(l);
+    for l in L: int_print(l);
 
     for i, l in L: L[i] = 2*l;
-    for l in L: print(l);
+    for l in L: int_print(l);
 
-    for ^l in L: l. += 1;
-    for l in L: print(l);
+    for ^l in L: l. = l. + 1;
+    for l in L: int_print(l);
 
     return 0;
 }

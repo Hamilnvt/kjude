@@ -3019,6 +3019,7 @@ Symbol *get_struct_member(TypeInfo *struct_type, const char *member_name)
 
 TypeInfo *unary_type(ASTNode *node);
 TypeInfo *binop_type(ASTNode *node);
+void type_check(ASTNode *node);
 
 static_assert(__astnode_types_count == 24, "Cover all ast node types in node_type");
 TypeInfo *node_type(ASTNode *node)
@@ -3028,7 +3029,11 @@ TypeInfo *node_type(ASTNode *node)
         exit(1);
     }
 
-    if (node->resolved_type) return node->resolved_type;
+    if (node->resolved_type)
+        return node->resolved_type;
+
+    if (!node->type_checked)
+        type_check(node);
 
     TypeInfo *result_type = NULL;
 
@@ -3038,7 +3043,8 @@ TypeInfo *node_type(ASTNode *node)
         if (struct_type->kind == KIND_POINTER) {
             struct_type = struct_type->ptr.to;
         }
-        result_type = get_struct_member(struct_type, node->name)->type;
+        Symbol *member = get_struct_member(struct_type, node->name);
+        result_type = member->type;
     } break;
 
     case ASTNODE_CALL:
@@ -3116,7 +3122,7 @@ TypeInfo *node_type(ASTNode *node)
     if (!result_type || result_type->kind == KIND_INVALID) {
         loc_print(node->loc);
         unreachableln("Node type '%s' (%s)", astnode_type_as_string(node->type), node->name);
-        unreachableln("Type could not be determined or it's invalid in type check");
+        unreachableln("Type could not be determined or it's invalid in node_type");
         exit(1);
     }
 
@@ -3283,6 +3289,8 @@ void type_check(ASTNode *node)
 {
     if (!node) return;
     if (node->type_checked) return;
+
+    node->type_checked = true;
 
     switch (node->type) {
     case ASTNODE_PROGRAM: {
@@ -3599,8 +3607,6 @@ void type_check(ASTNode *node)
         unreachableln("Ast node type '%s' in type_check", astnode_type_as_string(node->type));
         exit(1);
     }
-
-    node->type_checked = true;
 }
 
 void generate_fn_signature(Symbol *sym, FILE *f)

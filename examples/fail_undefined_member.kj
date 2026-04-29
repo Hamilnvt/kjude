@@ -4,5 +4,10 @@ Point : struct = {
 
 main : () -> int = {
     p : Point;
-    return p.undefined;
+
+    //p.undefined; // strange error
+    
+    //p.undefined = 69; // this works
+
+    return p.undefined; // this don't
 }
