@@ -66,6 +66,18 @@ int run_cmd(char **cmd)
     }
 }
 
+void remove_output(Test *test)
+{
+    char *filename = strdup(test->filename);
+    filename[strlen(filename)-3] = '\0';
+
+    size_t output_size = (8+strlen(filename))*sizeof(char);
+    char *output_filename = malloc(output_size);
+    snprintf(output_filename, output_size, "output_%s", filename);
+    remove(output_filename);
+    free(output_filename);
+}
+
 void* worker(void *arg)
 {
     WorkerArg *warg = (WorkerArg*)arg;
@@ -79,12 +91,9 @@ void* worker(void *arg)
 
         char *cmd[] = {"./bin/kjude", test->filepath, NULL};
         test->exit_code = run_cmd(cmd);
+        test->result = test->should_fail ? (test->exit_code != 0) : (test->exit_code == 0);
 
-        if (test->should_fail) {
-            test->result = (test->exit_code != 0);
-        } else {
-            test->result = (test->exit_code == 0);
-        }
+        remove_output(test);
     }
 
     return NULL;
